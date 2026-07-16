@@ -6,7 +6,7 @@ export type CallStatus = 'idle' | 'calling' | 'ringing' | 'connected';
 interface SignalPayload {
   type: 'call-invite' | 'call-accepted' | 'call-declined' | 'call-ended' | 'webrtc-offer' | 'webrtc-answer' | 'webrtc-ice';
   from: string;
-  to: string;
+  to?: string;
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
   caller: string;
@@ -17,6 +17,22 @@ const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    // Free public TURN servers (for NAT traversal — STUN alone fails on symmetric NAT)
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
 };
 
@@ -34,6 +50,10 @@ export function useCall(roomId: string | null, username: string) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusRef = useRef<CallStatus>('idle');
   const usernameRef = useRef(username);
+  const remoteUsernameRef = useRef<string>(''); // Who we're talking to
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]); // Buffer early ICE candidates
+  const channelReadyRef = useRef(false); // Track subscription status
+  const callTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep refs in sync
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -63,9 +83,28 @@ export function useCall(roomId: string | null, username: string) {
     }
   }, []);
 
+  // Flush buffered ICE candidates after remote description is set
+  const flushPendingCandidates = useCallback(async () => {
+    const pc = pcRef.current;
+    if (!pc) return;
+    const candidates = pendingCandidatesRef.current;
+    pendingCandidatesRef.current = [];
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        // Non-fatal
+      }
+    }
+  }, []);
+
   // Full cleanup
   const cleanup = useCallback(() => {
     stopTimer();
+    if (callTimeoutRef.current) {
+      clearTimeout(callTimeoutRef.current);
+      callTimeoutRef.current = null;
+    }
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -74,13 +113,11 @@ export function useCall(roomId: string | null, username: string) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
-    if (channelRef.current) {
-      supabase.removeChannel(channelRef.current);
-      channelRef.current = null;
-    }
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = null;
     }
+    pendingCandidatesRef.current = [];
+    remoteUsernameRef.current = '';
     setStatus('idle');
     setCallerName('');
     setDuration(0);
@@ -103,14 +140,25 @@ export function useCall(roomId: string | null, username: string) {
     pc.ontrack = (event) => {
       if (remoteAudioRef.current && event.streams[0]) {
         remoteAudioRef.current.srcObject = event.streams[0];
-        // Play might need user interaction
-        remoteAudioRef.current.play().catch(() => {});
+        remoteAudioRef.current.play().catch((err) => {
+          console.warn('[Call] Auto-play blocked, will retry on user interaction:', err);
+        });
       }
     };
 
-    // Connection state
+    // Connection state monitoring
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      console.log('[Call] ICE connection state:', state);
+      if (state === 'failed') {
+        setError('网络连接失败，可能需要VPN');
+        setTimeout(() => cleanup(), 2000);
+      }
+    };
+
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
+      console.log('[Call] Connection state:', state);
       if (state === 'disconnected' || state === 'failed' || state === 'closed') {
         if (statusRef.current === 'connected' || statusRef.current === 'calling') {
           cleanup();
@@ -118,7 +166,7 @@ export function useCall(roomId: string | null, username: string) {
       }
     };
 
-    // ICE candidates → broadcast
+    // ICE candidates → broadcast (with target user)
     pc.onicecandidate = (event) => {
       if (event.candidate && channelRef.current) {
         channelRef.current.send({
@@ -127,6 +175,7 @@ export function useCall(roomId: string | null, username: string) {
           payload: {
             type: 'webrtc-ice',
             from: usernameRef.current,
+            to: remoteUsernameRef.current || undefined,
             candidate: event.candidate.toJSON(),
           } as SignalPayload,
         });
@@ -138,15 +187,19 @@ export function useCall(roomId: string | null, username: string) {
     if (isCaller) {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      // Wait for ICE gathering to complete (non-trickle) for more reliable connection
+      // Actually, use trickle ICE for faster connection — just send the offer now
       channelRef.current?.send({
         type: 'broadcast',
         event: 'signal',
         payload: {
           type: 'webrtc-offer',
           from: usernameRef.current,
+          to: remoteUsernameRef.current || undefined,
           sdp: offer,
         } as SignalPayload,
       });
+      console.log('[Call] Sent WebRTC offer to', remoteUsernameRef.current || 'all');
     }
   }, [cleanup]);
 
@@ -154,6 +207,7 @@ export function useCall(roomId: string | null, username: string) {
   useEffect(() => {
     if (!roomId || !username) return;
 
+    channelReadyRef.current = false;
     const channel = supabase.channel(`call-${roomId}`, {
       config: { broadcast: { self: false } },
     });
@@ -167,12 +221,16 @@ export function useCall(roomId: string | null, username: string) {
       // Ignore my own messages
       if (payload.from === usernameRef.current) return;
 
+      console.log('[Call] Received signal:', payload.type, 'from:', payload.from);
+
       switch (payload.type) {
         case 'call-invite': {
           // Incoming call notification
           if (statusRef.current === 'idle') {
+            remoteUsernameRef.current = payload.from; // Remember who's calling
             setCallerName(payload.caller || payload.from);
             setStatus('ringing');
+            console.log('[Call] Incoming call from', payload.from);
           }
           break;
         }
@@ -180,10 +238,12 @@ export function useCall(roomId: string | null, username: string) {
         case 'call-accepted': {
           // My call was accepted, start WebRTC as caller
           if (statusRef.current === 'calling') {
+            remoteUsernameRef.current = payload.from; // Remember who answered
+            console.log('[Call] Call accepted by', payload.from);
             try {
               await createPeerConnection(true);
             } catch (err) {
-              console.error('Failed to create peer connection:', err);
+              console.error('[Call] Failed to create peer connection:', err);
               setError('连接失败');
               cleanup();
             }
@@ -203,6 +263,7 @@ export function useCall(roomId: string | null, username: string) {
         case 'call-ended': {
           // Other party ended the call
           if (statusRef.current === 'connected' || statusRef.current === 'ringing') {
+            console.log('[Call] Remote party ended the call');
             cleanup();
           }
           break;
@@ -212,11 +273,18 @@ export function useCall(roomId: string | null, username: string) {
           // Incoming WebRTC offer — I'm the callee
           if (statusRef.current === 'ringing' || statusRef.current === 'idle') {
             try {
-              // Need local stream (was already requested on accept)
+              // Remember who sent the offer (should be the caller)
+              if (payload.from) remoteUsernameRef.current = payload.from;
+
               await createPeerConnection(false);
               const pc = pcRef.current;
               if (pc && payload.sdp) {
                 await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+                console.log('[Call] Remote description set (offer)');
+
+                // Flush any buffered ICE candidates that arrived before the offer
+                await flushPendingCandidates();
+
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 channel.send({
@@ -225,14 +293,16 @@ export function useCall(roomId: string | null, username: string) {
                   payload: {
                     type: 'webrtc-answer',
                     from: usernameRef.current,
+                    to: remoteUsernameRef.current,
                     sdp: answer,
                   } as SignalPayload,
                 });
+                console.log('[Call] Sent WebRTC answer to', remoteUsernameRef.current);
                 setStatus('connected');
                 startTimer();
               }
             } catch (err) {
-              console.error('Failed to handle offer:', err);
+              console.error('[Call] Failed to handle offer:', err);
               setError('连接失败');
               cleanup();
             }
@@ -245,10 +315,16 @@ export function useCall(roomId: string | null, username: string) {
           if (statusRef.current === 'calling' && pcRef.current && payload.sdp) {
             try {
               await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+              console.log('[Call] Remote description set (answer)');
+
+              // Flush any buffered ICE candidates
+              await flushPendingCandidates();
+
               setStatus('connected');
               startTimer();
+              console.log('[Call] Connection established!');
             } catch (err) {
-              console.error('Failed to set remote description:', err);
+              console.error('[Call] Failed to set remote description:', err);
               setError('连接失败');
               cleanup();
             }
@@ -257,12 +333,19 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'webrtc-ice': {
-          // ICE candidate exchange
-          if (pcRef.current && payload.candidate) {
-            try {
-              await pcRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
-            } catch (err) {
-              // ICE errors are non-fatal during negotiation
+          // ICE candidate exchange — buffer if PC not ready or remote description not set
+          if (payload.candidate) {
+            const pc = pcRef.current;
+            if (pc && pc.remoteDescription) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+              } catch (err) {
+                console.warn('[Call] Failed to add ICE candidate:', err);
+              }
+            } else {
+              // Buffer the candidate — will be flushed after remote description is set
+              pendingCandidatesRef.current.push(payload.candidate);
+              console.log('[Call] Buffered ICE candidate (PC not ready), total buffered:', pendingCandidatesRef.current.length);
             }
           }
           break;
@@ -270,7 +353,16 @@ export function useCall(roomId: string | null, username: string) {
       }
     });
 
-    channel.subscribe();
+    // Wait for subscription to be confirmed before marking channel as ready
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        channelReadyRef.current = true;
+        console.log('[Call] Channel subscribed for room:', roomId);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.error('[Call] Channel subscription failed:', status);
+        channelReadyRef.current = false;
+      }
+    });
     channelRef.current = channel;
 
     return () => {
@@ -285,6 +377,7 @@ export function useCall(roomId: string | null, username: string) {
           } as SignalPayload,
         });
       }
+      channelReadyRef.current = false;
       supabase.removeChannel(channel);
       channelRef.current = null;
     };
@@ -294,6 +387,14 @@ export function useCall(roomId: string | null, username: string) {
   // Start an outgoing call
   const startCall = useCallback(async () => {
     if (!roomId || statusRef.current !== 'idle') return;
+
+    // Wait for channel to be ready
+    if (!channelReadyRef.current) {
+      setError('连接未就绪，请稍后再试');
+      setTimeout(() => setError(''), 2000);
+      return;
+    }
+
     setError('');
 
     try {
@@ -302,7 +403,7 @@ export function useCall(roomId: string | null, username: string) {
       setStatus('calling');
       setCallerName(username);
 
-      // Broadcast call invite to the room
+      // Broadcast call invite to the room (no specific target — anyone can answer)
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -313,17 +414,18 @@ export function useCall(roomId: string | null, username: string) {
             caller: username,
           } as SignalPayload,
         });
+        console.log('[Call] Sent call-invite to room:', roomId);
       }
 
       // Auto-cancel after 30s if no answer
-      setTimeout(() => {
+      callTimeoutRef.current = setTimeout(() => {
         if (statusRef.current === 'calling') {
           setError('无人接听');
           setTimeout(() => cleanup(), 1500);
         }
       }, 30000);
     } catch (err: any) {
-      console.error('Failed to start call:', err);
+      console.error('[Call] Failed to start call:', err);
       if (err.name === 'NotAllowedError') {
         setError('请允许麦克风权限');
       } else if (err.name === 'NotFoundError') {
@@ -344,7 +446,7 @@ export function useCall(roomId: string | null, username: string) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
 
-      // Notify caller that we accepted
+      // Notify caller that we accepted (target the caller specifically)
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -352,12 +454,14 @@ export function useCall(roomId: string | null, username: string) {
           payload: {
             type: 'call-accepted',
             from: username,
+            to: remoteUsernameRef.current, // Target the caller
           } as SignalPayload,
         });
+        console.log('[Call] Accepted call, notified', remoteUsernameRef.current);
       }
       // WebRTC connection will be set up when we receive the offer
     } catch (err: any) {
-      console.error('Failed to accept call:', err);
+      console.error('[Call] Failed to accept call:', err);
       if (err.name === 'NotAllowedError') {
         setError('请允许麦克风权限');
       } else {
@@ -377,6 +481,7 @@ export function useCall(roomId: string | null, username: string) {
         payload: {
           type: 'call-declined',
           from: username,
+          to: remoteUsernameRef.current, // Target the caller
         } as SignalPayload,
       });
     }
@@ -392,6 +497,7 @@ export function useCall(roomId: string | null, username: string) {
         payload: {
           type: 'call-ended',
           from: username,
+          to: remoteUsernameRef.current || undefined,
         } as SignalPayload,
       });
     }
