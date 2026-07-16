@@ -42,6 +42,7 @@ export function useCall(roomId: string | null, username: string) {
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState('');
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -63,10 +64,29 @@ export function useCall(roomId: string | null, username: string) {
   useEffect(() => {
     const audio = new Audio();
     audio.autoplay = true;
+    audio.setAttribute('playsinline', ''); // Required for iOS Safari
+    audio.muted = false; // Explicitly not muted
+    audio.volume = 1;
     audio.style.display = 'none';
     document.body.appendChild(audio);
     remoteAudioRef.current = audio;
     return () => { audio.remove(); };
+  }, []);
+
+  // Try to play remote audio — retry on user interaction if blocked by autoplay policy
+  const ensureAudioPlaying = useCallback(() => {
+    const audio = remoteAudioRef.current;
+    if (!audio || !audio.srcObject) return;
+    audio.muted = false;
+    audio.play()
+      .then(() => {
+        setAudioBlocked(false);
+        console.log('[Call] Remote audio playing successfully');
+      })
+      .catch((err) => {
+        console.warn('[Call] Audio autoplay blocked:', err.message);
+        setAudioBlocked(true);
+      });
   }, []);
 
   // Timer for call duration
@@ -123,6 +143,7 @@ export function useCall(roomId: string | null, username: string) {
     setDuration(0);
     setIsMuted(false);
     setError('');
+    setAudioBlocked(false);
   }, [stopTimer]);
 
   // Create peer connection and wire up signaling
@@ -138,11 +159,16 @@ export function useCall(roomId: string | null, username: string) {
 
     // Remote audio
     pc.ontrack = (event) => {
+      console.log('[Call] ontrack fired, streams:', event.streams.length, 'tracks:', event.streams[0]?.getTracks().length);
       if (remoteAudioRef.current && event.streams[0]) {
-        remoteAudioRef.current.srcObject = event.streams[0];
-        remoteAudioRef.current.play().catch((err) => {
-          console.warn('[Call] Auto-play blocked, will retry on user interaction:', err);
+        const stream = event.streams[0];
+        // Log track details for debugging
+        stream.getTracks().forEach((track, i) => {
+          console.log(`[Call] Remote track ${i}: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
         });
+        remoteAudioRef.current.srcObject = stream;
+        // Try to play immediately
+        ensureAudioPlaying();
       }
     };
 
@@ -515,6 +541,26 @@ export function useCall(roomId: string | null, username: string) {
     }
   }, []);
 
+  // Retry audio playback on any user interaction during call (browsers block autoplay)
+  useEffect(() => {
+    if (status !== 'connected') return;
+    const unlock = () => {
+      if (audioBlocked) ensureAudioPlaying();
+    };
+    // Listen for any click/touch — the first one will unlock audio
+    document.addEventListener('click', unlock);
+    document.addEventListener('touchstart', unlock);
+    // Also retry periodically — sometimes the stream isn't ready on first try
+    const retryInterval = setInterval(() => {
+      ensureAudioPlaying();
+    }, 2000);
+    return () => {
+      document.removeEventListener('click', unlock);
+      document.removeEventListener('touchstart', unlock);
+      clearInterval(retryInterval);
+    };
+  }, [status, audioBlocked, ensureAudioPlaying]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -539,10 +585,12 @@ export function useCall(roomId: string | null, username: string) {
     duration,
     isMuted,
     error,
+    audioBlocked,
     startCall,
     acceptCall,
     declineCall,
     endCall,
     toggleMute,
+    unlockAudio: ensureAudioPlaying,
   };
 }

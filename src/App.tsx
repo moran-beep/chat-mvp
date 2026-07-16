@@ -43,11 +43,13 @@ function ChatApp({ username }: { username: string }) {
     duration,
     isMuted,
     error: callError,
+    audioBlocked,
     startCall,
     acceptCall,
     declineCall,
     endCall,
     toggleMute,
+    unlockAudio,
   } = useCall(activeRoomId, username);
 
   const [showCreateRoom, setShowCreateRoom] = useState(false);
@@ -106,10 +108,12 @@ function ChatApp({ username }: { username: string }) {
         duration={duration}
         isMuted={isMuted}
         error={callError}
+        audioBlocked={audioBlocked}
         onAccept={acceptCall}
         onDecline={declineCall}
         onEnd={endCall}
         onToggleMute={toggleMute}
+        onUnlockAudio={unlockAudio}
         currentUsername={username}
       />
     </div>

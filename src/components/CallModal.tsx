@@ -7,10 +7,12 @@ interface CallModalProps {
   duration: number;
   isMuted: boolean;
   error: string;
+  audioBlocked: boolean;
   onAccept: () => void;
   onDecline: () => void;
   onEnd: () => void;
   onToggleMute: () => void;
+  onUnlockAudio: () => void;
   currentUsername: string;
 }
 
@@ -26,10 +28,12 @@ export default function CallModal({
   duration,
   isMuted,
   error,
+  audioBlocked,
   onAccept,
   onDecline,
   onEnd,
   onToggleMute,
+  onUnlockAudio,
   currentUsername,
 }: CallModalProps) {
   if (status === 'idle' && !error) return null;
@@ -91,18 +95,24 @@ export default function CallModal({
   if (status === 'connected') {
     return (
       <div className="call-overlay">
-        <div className="call-card connected">
+        <div
+          className={`call-card connected ${audioBlocked ? 'audio-blocked' : ''}`}
+          onClick={audioBlocked ? onUnlockAudio : undefined}
+        >
           <div className="call-avatar connected-avatar">
             {callerName.charAt(0).toUpperCase()}
           </div>
           <div className="call-wave" />
           <h3 className="call-title">{callerName}</h3>
           <p className="call-duration">{formatDuration(duration)}</p>
+          {audioBlocked && (
+            <p className="call-audio-hint">👆 点击屏幕开启声音</p>
+          )}
           {error && <p className="call-error">{error}</p>}
           <div className="call-actions">
             <button
               className={`call-btn mute ${isMuted ? 'active' : ''}`}
-              onClick={onToggleMute}
+              onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
               title={isMuted ? '取消静音' : '静音'}
             >
               {isMuted ? (
@@ -115,7 +125,7 @@ export default function CallModal({
                 </svg>
               )}
             </button>
-            <button className="call-btn decline" onClick={onEnd} title="挂断">
+            <button className="call-btn decline" onClick={(e) => { e.stopPropagation(); onEnd(); }} title="挂断">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                 <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" fill="white" transform="rotate(135 12 12)"/>
               </svg>

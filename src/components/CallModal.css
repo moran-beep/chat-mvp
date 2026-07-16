@@ -199,6 +199,31 @@
   gap: 12px;
 }
 
+/* Audio blocked — card is clickable to unlock */
+.call-card.audio-blocked {
+  cursor: pointer;
+  border: 2px solid rgba(250, 204, 21, 0.5);
+  animation: pulseYellow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulseYellow {
+  0%, 100% { border-color: rgba(250, 204, 21, 0.3); }
+  50% { border-color: rgba(250, 204, 21, 0.8); }
+}
+
+.call-audio-hint {
+  color: #facc15;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 4px 0 0 0;
+  animation: blink 1.5s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .call-error-icon {
   width: 48px;
   height: 48px;
