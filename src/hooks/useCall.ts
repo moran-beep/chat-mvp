@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 
-export type CallStatus = 'idle' | 'calling' | 'ringing' | 'connected';
+export type CallStatus = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected';
 
 interface SignalPayload {
   type: 'call-invite' | 'call-accepted' | 'call-declined' | 'call-ended' | 'webrtc-offer' | 'webrtc-answer' | 'webrtc-ice';
@@ -9,14 +9,17 @@ interface SignalPayload {
   to?: string;
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
-  caller: string;
+  caller?: string;
 }
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
+    // China-accessible STUN servers (more reliable than Google in mainland China)
+    { urls: 'stun:stun.miwifi.com:3478' },
+    { urls: 'stun:stun.qq.com:3478' },
+    // Google STUN as fallback
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
     // Free public TURN servers (for NAT traversal — STUN alone fails on symmetric NAT)
     {
       urls: 'turn:openrelay.metered.ca:80',
@@ -36,6 +39,32 @@ const RTC_CONFIG: RTCConfiguration = {
   ],
 };
 
+// Wait for ICE gathering to complete (non-trickle ICE — more reliable)
+// Returns the local description with all candidates gathered
+function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 3000): Promise<void> {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') {
+      resolve();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const checkState = () => {
+      if (pc.iceGatheringState === 'complete') {
+        if (timer) clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', checkState);
+        resolve();
+      }
+    };
+    pc.addEventListener('icegatheringstatechange', checkState);
+    // Timeout — resolve anyway with whatever candidates we have
+    timer = setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', checkState);
+      console.log('[Call] ICE gathering timeout, proceeding with partial candidates');
+      resolve();
+    }, timeoutMs);
+  });
+}
+
 export function useCall(roomId: string | null, username: string) {
   const [status, setStatus] = useState<CallStatus>('idle');
   const [callerName, setCallerName] = useState('');
@@ -43,6 +72,7 @@ export function useCall(roomId: string | null, username: string) {
   const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState('');
   const [audioBlocked, setAudioBlocked] = useState(false);
+  const [iceState, setIceState] = useState('');
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -51,42 +81,62 @@ export function useCall(roomId: string | null, username: string) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusRef = useRef<CallStatus>('idle');
   const usernameRef = useRef(username);
-  const remoteUsernameRef = useRef<string>(''); // Who we're talking to
-  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]); // Buffer early ICE candidates
-  const channelReadyRef = useRef(false); // Track subscription status
+  const remoteUsernameRef = useRef<string>('');
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const channelReadyRef = useRef(false);
   const callTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep refs in sync
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { usernameRef.current = username; }, [username]);
 
-  // Create a hidden audio element for remote audio
+  // Create a hidden audio element for remote audio — use position:absolute instead of display:none
+  // (some browsers won't play audio from display:none elements)
   useEffect(() => {
-    const audio = new Audio();
-    audio.autoplay = true;
-    audio.setAttribute('playsinline', ''); // Required for iOS Safari
-    audio.muted = false; // Explicitly not muted
+    const audio = document.createElement('audio');
+    audio.setAttribute('playsinline', '');
+    audio.setAttribute('autoplay', '');
+    audio.muted = false;
     audio.volume = 1;
-    audio.style.display = 'none';
+    audio.style.position = 'fixed';
+    audio.style.top = '-1px';
+    audio.style.left = '-1px';
+    audio.style.width = '1px';
+    audio.style.height = '1px';
+    audio.style.opacity = '0';
+    audio.style.pointerEvents = 'none';
     document.body.appendChild(audio);
     remoteAudioRef.current = audio;
-    return () => { audio.remove(); };
+    return () => {
+      audio.remove();
+      remoteAudioRef.current = null;
+    };
   }, []);
 
   // Try to play remote audio — retry on user interaction if blocked by autoplay policy
   const ensureAudioPlaying = useCallback(() => {
     const audio = remoteAudioRef.current;
-    if (!audio || !audio.srcObject) return;
+    if (!audio) return;
+    if (!audio.srcObject) {
+      console.log('[Call] ensureAudioPlaying: no srcObject yet');
+      return;
+    }
     audio.muted = false;
-    audio.play()
-      .then(() => {
-        setAudioBlocked(false);
-        console.log('[Call] Remote audio playing successfully');
-      })
-      .catch((err) => {
-        console.warn('[Call] Audio autoplay blocked:', err.message);
-        setAudioBlocked(true);
-      });
+    audio.volume = 1;
+    const playPromise = audio.play();
+    if (playPromise) {
+      playPromise
+        .then(() => {
+          setAudioBlocked(false);
+          console.log('[Call] ✅ Remote audio playing successfully');
+        })
+        .catch((err) => {
+          console.warn('[Call] ❌ Audio autoplay blocked:', err.message);
+          setAudioBlocked(true);
+        });
+    }
   }, []);
 
   // Timer for call duration
@@ -125,6 +175,14 @@ export function useCall(roomId: string | null, username: string) {
       clearTimeout(callTimeoutRef.current);
       callTimeoutRef.current = null;
     }
+    if (iceTimeoutRef.current) {
+      clearTimeout(iceTimeoutRef.current);
+      iceTimeoutRef.current = null;
+    }
+    if (audioRetryRef.current) {
+      clearInterval(audioRetryRef.current);
+      audioRetryRef.current = null;
+    }
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -144,6 +202,7 @@ export function useCall(roomId: string | null, username: string) {
     setIsMuted(false);
     setError('');
     setAudioBlocked(false);
+    setIceState('');
   }, [stopTimer]);
 
   // Create peer connection and wire up signaling
@@ -154,42 +213,83 @@ export function useCall(roomId: string | null, username: string) {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         pc.addTrack(track, localStreamRef.current!);
+        console.log('[Call] Added local track:', track.kind, 'enabled:', track.enabled);
       });
+    } else {
+      console.warn('[Call] No local stream when creating peer connection!');
     }
 
-    // Remote audio
+    // Remote audio — handle both stream and track events
     pc.ontrack = (event) => {
-      console.log('[Call] ontrack fired, streams:', event.streams.length, 'tracks:', event.streams[0]?.getTracks().length);
-      if (remoteAudioRef.current && event.streams[0]) {
-        const stream = event.streams[0];
-        // Log track details for debugging
-        stream.getTracks().forEach((track, i) => {
-          console.log(`[Call] Remote track ${i}: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
-        });
-        remoteAudioRef.current.srcObject = stream;
-        // Try to play immediately
-        ensureAudioPlaying();
+      console.log('[Call] 📡 ontrack fired! streams:', event.streams.length, 'track:', event.track.kind, 'enabled:', event.track.enabled, 'readyState:', event.track.readyState);
+      const audio = remoteAudioRef.current;
+      if (!audio) {
+        console.error('[Call] No audio element available!');
+        return;
       }
+      // Use the stream from the event, or create one from the track
+      const stream = event.streams[0] || new MediaStream([event.track]);
+      audio.srcObject = stream;
+      console.log('[Call] Set remote audio srcObject, tracks:', stream.getTracks().length);
+
+      // Try to play immediately
+      ensureAudioPlaying();
+
+      // Also listen for track ended/muted events
+      event.track.onunmute = () => {
+        console.log('[Call] Remote track unmuted!');
+        ensureAudioPlaying();
+      };
+      event.track.onmute = () => {
+        console.log('[Call] Remote track muted');
+      };
     };
 
-    // Connection state monitoring
+    // ICE connection state — THIS is what determines if audio actually flows
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      console.log('[Call] ICE connection state:', state);
-      if (state === 'failed') {
-        setError('网络连接失败，可能需要VPN');
-        setTimeout(() => cleanup(), 2000);
+      console.log('[Call] 🧊 ICE connection state:', state);
+      setIceState(state);
+
+      if (state === 'connected' || state === 'completed') {
+        // ✅ ICE connected — NOW we're truly connected
+        if (statusRef.current === 'connecting') {
+          console.log('[Call] ✅ ICE connected! Setting status to connected');
+          setStatus('connected');
+          startTimer();
+          // Clear ICE timeout
+          if (iceTimeoutRef.current) {
+            clearTimeout(iceTimeoutRef.current);
+            iceTimeoutRef.current = null;
+          }
+          // Ensure audio plays
+          setTimeout(() => ensureAudioPlaying(), 500);
+          // Start periodic audio retry
+          if (audioRetryRef.current) clearInterval(audioRetryRef.current);
+          audioRetryRef.current = setInterval(() => {
+            ensureAudioPlaying();
+          }, 2000);
+        }
+      } else if (state === 'failed') {
+        console.error('[Call] ❌ ICE connection failed!');
+        setError('网络连接失败，请检查网络或尝试更换网络环境');
+        setTimeout(() => cleanup(), 3000);
+      } else if (state === 'disconnected') {
+        console.warn('[Call] ⚠️ ICE disconnected, may reconnect...');
+        // Don't cleanup immediately — ICE might reconnect
+        // But set a timeout
+        if (iceTimeoutRef.current) clearTimeout(iceTimeoutRef.current);
+        iceTimeoutRef.current = setTimeout(() => {
+          if (statusRef.current !== 'idle') {
+            setError('连接断开');
+            setTimeout(() => cleanup(), 2000);
+          }
+        }, 10000);
       }
     };
 
     pc.onconnectionstatechange = () => {
-      const state = pc.connectionState;
-      console.log('[Call] Connection state:', state);
-      if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-        if (statusRef.current === 'connected' || statusRef.current === 'calling') {
-          cleanup();
-        }
-      }
+      console.log('[Call] Connection state:', pc.connectionState);
     };
 
     // ICE candidates → broadcast (with target user)
@@ -208,13 +308,23 @@ export function useCall(roomId: string | null, username: string) {
       }
     };
 
+    // Log ICE gathering state
+    pc.onicegatheringstatechange = () => {
+      console.log('[Call] ICE gathering state:', pc.iceGatheringState);
+    };
+
     pcRef.current = pc;
 
     if (isCaller) {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
       await pc.setLocalDescription(offer);
-      // Wait for ICE gathering to complete (non-trickle) for more reliable connection
-      // Actually, use trickle ICE for faster connection — just send the offer now
+      console.log('[Call] Created offer, waiting for ICE gathering...');
+
+      // Wait for ICE gathering to complete (non-trickle ICE — more reliable)
+      await waitForIceGathering(pc, 3000);
+
+      // Send the offer (now with all ICE candidates embedded if gathering completed)
+      const finalOffer = pc.localDescription;
       channelRef.current?.send({
         type: 'broadcast',
         event: 'signal',
@@ -222,12 +332,15 @@ export function useCall(roomId: string | null, username: string) {
           type: 'webrtc-offer',
           from: usernameRef.current,
           to: remoteUsernameRef.current || undefined,
-          sdp: offer,
+          sdp: finalOffer,
         } as SignalPayload,
       });
       console.log('[Call] Sent WebRTC offer to', remoteUsernameRef.current || 'all');
+
+      // Set status to connecting (waiting for answer + ICE)
+      setStatus('connecting');
     }
-  }, [cleanup]);
+  }, [cleanup, ensureAudioPlaying, startTimer]);
 
   // Set up signaling channel for the room
   useEffect(() => {
@@ -251,9 +364,8 @@ export function useCall(roomId: string | null, username: string) {
 
       switch (payload.type) {
         case 'call-invite': {
-          // Incoming call notification
           if (statusRef.current === 'idle') {
-            remoteUsernameRef.current = payload.from; // Remember who's calling
+            remoteUsernameRef.current = payload.from;
             setCallerName(payload.caller || payload.from);
             setStatus('ringing');
             console.log('[Call] Incoming call from', payload.from);
@@ -262,9 +374,8 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'call-accepted': {
-          // My call was accepted, start WebRTC as caller
           if (statusRef.current === 'calling') {
-            remoteUsernameRef.current = payload.from; // Remember who answered
+            remoteUsernameRef.current = payload.from;
             console.log('[Call] Call accepted by', payload.from);
             try {
               await createPeerConnection(true);
@@ -278,7 +389,6 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'call-declined': {
-          // My call was declined
           if (statusRef.current === 'calling') {
             setError('对方拒绝了通话');
             setTimeout(() => cleanup(), 1500);
@@ -287,8 +397,7 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'call-ended': {
-          // Other party ended the call
-          if (statusRef.current === 'connected' || statusRef.current === 'ringing') {
+          if (statusRef.current !== 'idle') {
             console.log('[Call] Remote party ended the call');
             cleanup();
           }
@@ -296,10 +405,8 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'webrtc-offer': {
-          // Incoming WebRTC offer — I'm the callee
           if (statusRef.current === 'ringing' || statusRef.current === 'idle') {
             try {
-              // Remember who sent the offer (should be the caller)
               if (payload.from) remoteUsernameRef.current = payload.from;
 
               await createPeerConnection(false);
@@ -308,11 +415,16 @@ export function useCall(roomId: string | null, username: string) {
                 await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
                 console.log('[Call] Remote description set (offer)');
 
-                // Flush any buffered ICE candidates that arrived before the offer
                 await flushPendingCandidates();
 
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
+                console.log('[Call] Created answer, waiting for ICE gathering...');
+
+                // Wait for ICE gathering
+                await waitForIceGathering(pc, 3000);
+
+                const finalAnswer = pc.localDescription;
                 channel.send({
                   type: 'broadcast',
                   event: 'signal',
@@ -320,12 +432,22 @@ export function useCall(roomId: string | null, username: string) {
                     type: 'webrtc-answer',
                     from: usernameRef.current,
                     to: remoteUsernameRef.current,
-                    sdp: answer,
+                    sdp: finalAnswer,
                   } as SignalPayload,
                 });
                 console.log('[Call] Sent WebRTC answer to', remoteUsernameRef.current);
-                setStatus('connected');
-                startTimer();
+
+                // Set status to connecting (waiting for ICE to connect)
+                setStatus('connecting');
+
+                // Set ICE timeout — if ICE doesn't connect in 20s, show error
+                iceTimeoutRef.current = setTimeout(() => {
+                  if (statusRef.current === 'connecting') {
+                    console.error('[Call] ICE connection timeout!');
+                    setError('连接超时，请检查网络环境或尝试更换网络');
+                    setTimeout(() => cleanup(), 3000);
+                  }
+                }, 20000);
               }
             } catch (err) {
               console.error('[Call] Failed to handle offer:', err);
@@ -337,18 +459,23 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'webrtc-answer': {
-          // Callee accepted our offer
-          if (statusRef.current === 'calling' && pcRef.current && payload.sdp) {
+          if (statusRef.current === 'connecting' && pcRef.current && payload.sdp) {
             try {
               await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
               console.log('[Call] Remote description set (answer)');
 
-              // Flush any buffered ICE candidates
               await flushPendingCandidates();
 
-              setStatus('connected');
-              startTimer();
-              console.log('[Call] Connection established!');
+              // Set ICE timeout for caller too
+              iceTimeoutRef.current = setTimeout(() => {
+                if (statusRef.current === 'connecting') {
+                  console.error('[Call] ICE connection timeout (caller)!');
+                  setError('连接超时，请检查网络环境或尝试更换网络');
+                  setTimeout(() => cleanup(), 3000);
+                }
+              }, 20000);
+
+              console.log('[Call] Waiting for ICE to connect...');
             } catch (err) {
               console.error('[Call] Failed to set remote description:', err);
               setError('连接失败');
@@ -359,7 +486,6 @@ export function useCall(roomId: string | null, username: string) {
         }
 
         case 'webrtc-ice': {
-          // ICE candidate exchange — buffer if PC not ready or remote description not set
           if (payload.candidate) {
             const pc = pcRef.current;
             if (pc && pc.remoteDescription) {
@@ -369,9 +495,8 @@ export function useCall(roomId: string | null, username: string) {
                 console.warn('[Call] Failed to add ICE candidate:', err);
               }
             } else {
-              // Buffer the candidate — will be flushed after remote description is set
               pendingCandidatesRef.current.push(payload.candidate);
-              console.log('[Call] Buffered ICE candidate (PC not ready), total buffered:', pendingCandidatesRef.current.length);
+              console.log('[Call] Buffered ICE candidate, total:', pendingCandidatesRef.current.length);
             }
           }
           break;
@@ -379,7 +504,6 @@ export function useCall(roomId: string | null, username: string) {
       }
     });
 
-    // Wait for subscription to be confirmed before marking channel as ready
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         channelReadyRef.current = true;
@@ -392,8 +516,7 @@ export function useCall(roomId: string | null, username: string) {
     channelRef.current = channel;
 
     return () => {
-      // Notify others before leaving
-      if (statusRef.current === 'connected' || statusRef.current === 'calling') {
+      if (statusRef.current === 'connected' || statusRef.current === 'connecting' || statusRef.current === 'calling') {
         channel.send({
           type: 'broadcast',
           event: 'signal',
@@ -414,7 +537,6 @@ export function useCall(roomId: string | null, username: string) {
   const startCall = useCallback(async () => {
     if (!roomId || statusRef.current !== 'idle') return;
 
-    // Wait for channel to be ready
     if (!channelReadyRef.current) {
       setError('连接未就绪，请稍后再试');
       setTimeout(() => setError(''), 2000);
@@ -424,12 +546,17 @@ export function useCall(roomId: string | null, username: string) {
     setError('');
 
     try {
+      console.log('[Call] Requesting microphone access...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
+      console.log('[Call] ✅ Got local audio stream, tracks:', stream.getTracks().length);
+      stream.getTracks().forEach((t, i) => {
+        console.log(`[Call] Local track ${i}: kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
+      });
+
       setStatus('calling');
       setCallerName(username);
 
-      // Broadcast call invite to the room (no specific target — anyone can answer)
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -443,7 +570,6 @@ export function useCall(roomId: string | null, username: string) {
         console.log('[Call] Sent call-invite to room:', roomId);
       }
 
-      // Auto-cancel after 30s if no answer
       callTimeoutRef.current = setTimeout(() => {
         if (statusRef.current === 'calling') {
           setError('无人接听');
@@ -469,10 +595,11 @@ export function useCall(roomId: string | null, username: string) {
     setError('');
 
     try {
+      console.log('[Call] Accepting call, requesting microphone...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
+      console.log('[Call] ✅ Got local audio stream for accepting call');
 
-      // Notify caller that we accepted (target the caller specifically)
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -480,12 +607,11 @@ export function useCall(roomId: string | null, username: string) {
           payload: {
             type: 'call-accepted',
             from: username,
-            to: remoteUsernameRef.current, // Target the caller
+            to: remoteUsernameRef.current,
           } as SignalPayload,
         });
         console.log('[Call] Accepted call, notified', remoteUsernameRef.current);
       }
-      // WebRTC connection will be set up when we receive the offer
     } catch (err: any) {
       console.error('[Call] Failed to accept call:', err);
       if (err.name === 'NotAllowedError') {
@@ -507,7 +633,7 @@ export function useCall(roomId: string | null, username: string) {
         payload: {
           type: 'call-declined',
           from: username,
-          to: remoteUsernameRef.current, // Target the caller
+          to: remoteUsernameRef.current,
         } as SignalPayload,
       });
     }
@@ -516,7 +642,7 @@ export function useCall(roomId: string | null, username: string) {
 
   // End the current call
   const endCall = useCallback(() => {
-    if (channelRef.current && (statusRef.current === 'connected' || statusRef.current === 'calling')) {
+    if (channelRef.current && statusRef.current !== 'idle' && statusRef.current !== 'ringing') {
       channelRef.current.send({
         type: 'broadcast',
         event: 'signal',
@@ -537,34 +663,29 @@ export function useCall(roomId: string | null, username: string) {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
+        console.log('[Call] Mute toggled:', !audioTrack.enabled);
       }
     }
   }, []);
 
-  // Retry audio playback on any user interaction during call (browsers block autoplay)
+  // Retry audio playback on any user interaction during call
   useEffect(() => {
     if (status !== 'connected') return;
     const unlock = () => {
-      if (audioBlocked) ensureAudioPlaying();
+      ensureAudioPlaying();
     };
-    // Listen for any click/touch — the first one will unlock audio
     document.addEventListener('click', unlock);
     document.addEventListener('touchstart', unlock);
-    // Also retry periodically — sometimes the stream isn't ready on first try
-    const retryInterval = setInterval(() => {
-      ensureAudioPlaying();
-    }, 2000);
     return () => {
       document.removeEventListener('click', unlock);
       document.removeEventListener('touchstart', unlock);
-      clearInterval(retryInterval);
     };
-  }, [status, audioBlocked, ensureAudioPlaying]);
+  }, [status, ensureAudioPlaying]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (channelRef.current && (statusRef.current === 'connected' || statusRef.current === 'calling')) {
+      if (channelRef.current && (statusRef.current === 'connected' || statusRef.current === 'connecting' || statusRef.current === 'calling')) {
         channelRef.current.send({
           type: 'broadcast',
           event: 'signal',
@@ -586,6 +707,7 @@ export function useCall(roomId: string | null, username: string) {
     isMuted,
     error,
     audioBlocked,
+    iceState,
     startCall,
     acceptCall,
     declineCall,

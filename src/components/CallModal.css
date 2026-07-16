@@ -199,6 +199,31 @@
   gap: 12px;
 }
 
+/* Connecting state — spinner */
+.call-card.connecting {
+  /* same as default */
+}
+
+.call-avatar.connecting-avatar {
+  background: linear-gradient(135deg, #f59e0b, #f97316);
+}
+
+.call-spinner {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: rgba(245, 158, 11, 0.8);
+  border-right-color: rgba(245, 158, 11, 0.3);
+  animation: spin 1s linear infinite;
+  z-index: 1;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Audio blocked — card is clickable to unlock */
 .call-card.audio-blocked {
   cursor: pointer;

@@ -44,6 +44,7 @@ function ChatApp({ username }: { username: string }) {
     isMuted,
     error: callError,
     audioBlocked,
+    iceState,
     startCall,
     acceptCall,
     declineCall,
@@ -68,7 +69,7 @@ function ChatApp({ username }: { username: string }) {
     );
   }
 
-  const callActive = callStatus === 'connected' || callStatus === 'calling';
+  const callActive = callStatus === 'connected' || callStatus === 'calling' || callStatus === 'connecting';
 
   return (
     <div className="app-container">
@@ -109,6 +110,7 @@ function ChatApp({ username }: { username: string }) {
         isMuted={isMuted}
         error={callError}
         audioBlocked={audioBlocked}
+        iceState={iceState}
         onAccept={acceptCall}
         onDecline={declineCall}
         onEnd={endCall}

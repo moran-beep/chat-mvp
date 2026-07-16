@@ -8,6 +8,7 @@ interface CallModalProps {
   isMuted: boolean;
   error: string;
   audioBlocked: boolean;
+  iceState: string;
   onAccept: () => void;
   onDecline: () => void;
   onEnd: () => void;
@@ -29,6 +30,7 @@ export default function CallModal({
   isMuted,
   error,
   audioBlocked,
+  iceState,
   onAccept,
   onDecline,
   onEnd,
@@ -78,6 +80,34 @@ export default function CallModal({
           <div className="call-pulse" />
           <h3 className="call-title">正在呼叫...</h3>
           <p className="call-subtitle">等待对方接听</p>
+          {error && <p className="call-error">{error}</p>}
+          <div className="call-actions">
+            <button className="call-btn decline" onClick={onEnd} title="取消">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" fill="white" transform="rotate(135 12 12)"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Connecting — SDP exchanged, waiting for ICE to connect
+  if (status === 'connecting') {
+    return (
+      <div className="call-overlay">
+        <div className="call-card connecting">
+          <div className="call-avatar connecting-avatar">
+            {callerName.charAt(0).toUpperCase() || currentUsername.charAt(0).toUpperCase()}
+          </div>
+          <div className="call-spinner" />
+          <h3 className="call-title">正在建立连接...</h3>
+          <p className="call-subtitle">
+            {iceState === 'checking' ? '正在穿透网络...' :
+             iceState === 'new' ? '正在收集网络信息...' :
+             '请稍候'}
+          </p>
           {error && <p className="call-error">{error}</p>}
           <div className="call-actions">
             <button className="call-btn decline" onClick={onEnd} title="取消">
