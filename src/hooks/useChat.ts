@@ -27,9 +27,10 @@ export function useChat(username: string) {
         .order('created_at', { ascending: true });
 
       if (!cancelled && !error && data) {
-        setRooms(data);
-        if (data.length > 0 && !activeRoomId) {
-          setActiveRoomId(data[0].id);
+        const roomList = data as Room[];
+        setRooms(roomList);
+        if (roomList.length > 0 && !activeRoomId) {
+          setActiveRoomId(roomList[0].id);
         }
       }
       setLoading(false);
@@ -57,6 +58,7 @@ export function useChat(username: string) {
   // Fetch messages and subscribe when active room changes
   useEffect(() => {
     if (!activeRoomId) return;
+    const roomId = activeRoomId; // narrowed to string
 
     let cancelled = false;
 
@@ -71,26 +73,26 @@ export function useChat(username: string) {
       const { data, error } = await supabase
         .from('messages')
         .select('*')
-        .eq('room_id', activeRoomId)
+        .eq('room_id', roomId)
         .order('created_at', { ascending: true })
         .limit(100);
 
       if (!cancelled && !error && data) {
-        setMessages(data);
+        setMessages(data as Message[]);
       }
     }
     fetchMessages();
 
     // Subscribe to new messages in this room
     const channel = supabase
-      .channel(`room-${activeRoomId}`)
+      .channel(`room-${roomId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'messages',
-          filter: `room_id=eq.${activeRoomId}`,
+          filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
           const newMsg = payload.new as Message;
@@ -98,7 +100,7 @@ export function useChat(username: string) {
           // Update last message for room
           setRooms((prev) =>
             prev.map((r) =>
-              r.id === activeRoomId
+              r.id === roomId
                 ? { ...r, lastMessage: newMsg.content, lastTime: newMsg.created_at }
                 : r
             )
@@ -118,11 +120,12 @@ export function useChat(username: string) {
   const sendMessage = useCallback(
     async (content: string) => {
       if (!activeRoomId || !content.trim()) return;
+      const roomId = activeRoomId;
       await supabase.from('messages').insert({
-        room_id: activeRoomId,
+        room_id: roomId,
         username,
         content: content.trim(),
-      });
+      } as any);
     },
     [activeRoomId, username]
   );
@@ -134,12 +137,12 @@ export function useChat(username: string) {
       if (!trimmed) return;
       const { data, error } = await supabase
         .from('rooms')
-        .insert({ name: trimmed })
+        .insert({ name: trimmed } as any)
         .select()
         .single();
 
       if (!error && data) {
-        setActiveRoomId(data.id);
+        setActiveRoomId((data as Room).id);
       }
     },
     []
