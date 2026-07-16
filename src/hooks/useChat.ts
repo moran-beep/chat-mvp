@@ -1,87 +1,160 @@
-import { useState, useCallback, useRef } from 'react';
-import type { Conversation, Message } from '../types/chat';
-import { initialConversations, getRandomReply, getReplyDelay, currentUser } from '../data/mockData';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../lib/supabase';
+import type { Database } from '../types/supabase';
 
-export function useChat() {
-  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
-  const [activeConversationId, setActiveConversationId] = useState<string>(conversations[0].id);
-  const [isTyping, setIsTyping] = useState(false);
-  const replyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+type Room = Database['public']['Tables']['rooms']['Row'];
+type Message = Database['public']['Tables']['messages']['Row'];
 
-  const activeConversation = conversations.find((c) => c.id === activeConversationId)!;
+interface ChatRoom extends Room {
+  lastMessage?: string;
+  lastTime?: string;
+}
 
-  const sendMessage = useCallback(
-    (content: string) => {
-      const trimmed = content.trim();
-      if (!trimmed) return;
+export function useChat(username: string) {
+  const [rooms, setRooms] = useState<ChatRoom[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-      const newMessage: Message = {
-        id: `msg-${Date.now()}`,
-        conversationId: activeConversationId,
-        senderId: currentUser.id,
-        content: trimmed,
-        timestamp: Date.now(),
-        status: 'sent',
-      };
+  // Fetch rooms on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchRooms() {
+      const { data, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .order('created_at', { ascending: true });
 
-      setConversations((prev) =>
-        prev.map((conv) =>
-          conv.id === activeConversationId
-            ? { ...conv, messages: [...conv.messages, newMessage] }
-            : conv
-        )
-      );
+      if (!cancelled && !error && data) {
+        setRooms(data);
+        if (data.length > 0 && !activeRoomId) {
+          setActiveRoomId(data[0].id);
+        }
+      }
+      setLoading(false);
+    }
+    fetchRooms();
 
-      // 模拟对方"正在输入" + 自动回复
-      if (replyTimerRef.current) clearTimeout(replyTimerRef.current);
+    // Subscribe to new rooms
+    const roomsChannel = supabase
+      .channel('rooms-channel')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'rooms' },
+        (payload) => {
+          setRooms((prev) => [...prev, payload.new as Room]);
+        }
+      )
+      .subscribe();
 
-      setTimeout(() => setIsTyping(true), 500);
-
-      replyTimerRef.current = setTimeout(() => {
-        setIsTyping(false);
-        const reply: Message = {
-          id: `msg-${Date.now()}-reply`,
-          conversationId: activeConversationId,
-          senderId: activeConversationId,
-          content: getRandomReply(),
-          timestamp: Date.now(),
-          status: 'delivered',
-        };
-
-        // 同时把之前发的消息标记为已读
-        setConversations((prev) =>
-          prev.map((conv) =>
-            conv.id === activeConversationId
-              ? {
-                  ...conv,
-                  messages: [
-                    ...conv.messages.map((m) =>
-                      m.senderId === currentUser.id ? { ...m, status: 'read' as const } : m
-                    ),
-                    reply,
-                  ],
-                }
-              : conv
-          )
-        );
-      }, getReplyDelay());
-    },
-    [activeConversationId]
-  );
-
-  const selectConversation = useCallback((id: string) => {
-    setActiveConversationId(id);
-    setIsTyping(false);
-    if (replyTimerRef.current) clearTimeout(replyTimerRef.current);
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(roomsChannel);
+    };
   }, []);
 
+  // Fetch messages and subscribe when active room changes
+  useEffect(() => {
+    if (!activeRoomId) return;
+
+    let cancelled = false;
+
+    // Unsubscribe from previous channel
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
+
+    async function fetchMessages() {
+      setMessages([]);
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('room_id', activeRoomId)
+        .order('created_at', { ascending: true })
+        .limit(100);
+
+      if (!cancelled && !error && data) {
+        setMessages(data);
+      }
+    }
+    fetchMessages();
+
+    // Subscribe to new messages in this room
+    const channel = supabase
+      .channel(`room-${activeRoomId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `room_id=eq.${activeRoomId}`,
+        },
+        (payload) => {
+          const newMsg = payload.new as Message;
+          setMessages((prev) => [...prev, newMsg]);
+          // Update last message for room
+          setRooms((prev) =>
+            prev.map((r) =>
+              r.id === activeRoomId
+                ? { ...r, lastMessage: newMsg.content, lastTime: newMsg.created_at }
+                : r
+            )
+          );
+        }
+      )
+      .subscribe();
+
+    channelRef.current = channel;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRoomId]);
+
+  // Send message
+  const sendMessage = useCallback(
+    async (content: string) => {
+      if (!activeRoomId || !content.trim()) return;
+      await supabase.from('messages').insert({
+        room_id: activeRoomId,
+        username,
+        content: content.trim(),
+      });
+    },
+    [activeRoomId, username]
+  );
+
+  // Create a new room
+  const createRoom = useCallback(
+    async (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const { data, error } = await supabase
+        .from('rooms')
+        .insert({ name: trimmed })
+        .select()
+        .single();
+
+      if (!error && data) {
+        setActiveRoomId(data.id);
+      }
+    },
+    []
+  );
+
+  const activeRoom = rooms.find((r) => r.id === activeRoomId) || null;
+
   return {
-    conversations,
-    activeConversation,
-    activeConversationId,
-    isTyping,
-    currentUser,
+    rooms,
+    messages,
+    activeRoom,
+    activeRoomId,
+    loading,
     sendMessage,
-    selectConversation,
+    createRoom,
+    setActiveRoomId,
   };
 }

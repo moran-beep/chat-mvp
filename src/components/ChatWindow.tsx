@@ -1,50 +1,68 @@
 import { useEffect, useRef } from 'react';
-import type { Conversation } from '../types/chat';
-import { MessageBubble } from './MessageBubble';
-import { shouldShowDateSeparator, formatDateSeparator } from '../utils/time';
+import MessageBubble from './MessageBubble';
+import ChatHeader from './ChatHeader';
+import type { Database } from '../types/supabase';
+
+type Message = Database['public']['Tables']['messages']['Row'];
+type Room = Database['public']['Tables']['rooms']['Row'];
 
 interface ChatWindowProps {
-  conversation: Conversation;
-  isTyping: boolean;
+  messages: Message[];
+  activeRoom: Room;
+  username: string;
 }
 
-export function ChatWindow({ conversation, isTyping }: ChatWindowProps) {
+export default function ChatWindow({ messages, activeRoom, username }: ChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversation.messages.length, isTyping]);
+  }, [messages]);
 
-  let lastTimestamp: number | null = null;
+  // Group messages by date
+  const grouped: { date: string; msgs: Message[] }[] = [];
+  let currentDate = '';
+  for (const msg of messages) {
+    const date = new Date(msg.created_at).toLocaleDateString('zh-CN', {
+      month: 'long',
+      day: 'numeric',
+    });
+    if (date !== currentDate) {
+      currentDate = date;
+      grouped.push({ date, msgs: [] });
+    }
+    grouped[grouped.length - 1].msgs.push(msg);
+  }
 
   return (
-    <div className="messages-container">
-      {conversation.messages.map((msg) => {
-        const showDate = shouldShowDateSeparator(msg.timestamp, lastTimestamp);
-        lastTimestamp = msg.timestamp;
-        const isMine = msg.senderId === 'me';
-
-        return (
-          <div key={msg.id}>
-            {showDate && (
-              <div className="date-separator">
-                <span>{formatDateSeparator(msg.timestamp)}</span>
-              </div>
-            )}
-            <MessageBubble message={msg} isMine={isMine} />
+    <div className="chat-window">
+      <ChatHeader roomName={activeRoom.name} />
+      <div className="messages-container">
+        {grouped.map((group, gi) => (
+          <div key={gi}>
+            <div className="date-separator">{group.date}</div>
+            {group.msgs.map((msg, mi) => {
+              const isOwn = msg.username === username;
+              const showAvatar =
+                mi === 0 || group.msgs[mi - 1].username !== msg.username;
+              return (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  isOwn={isOwn}
+                  showAvatar={showAvatar}
+                />
+              );
+            })}
           </div>
-        );
-      })}
-
-      {isTyping && (
-        <div className="typing-indicator">
-          <span className="dot" />
-          <span className="dot" />
-          <span className="dot" />
-        </div>
-      )}
-
-      <div ref={bottomRef} />
+        ))}
+        {messages.length === 0 && (
+          <div className="empty-chat">
+            <p>还没有消息，说点什么吧！</p>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
     </div>
   );
 }

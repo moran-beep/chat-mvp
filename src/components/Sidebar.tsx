@@ -1,63 +1,102 @@
-import type { Conversation } from '../types/chat';
+import { useState } from 'react';
 import { formatTime } from '../utils/time';
 import './Sidebar.css';
 
-interface SidebarProps {
-  conversations: Conversation[];
-  activeConversationId: string;
-  onSelect: (id: string) => void;
+interface Room {
+  id: string;
+  name: string;
+  created_at: string;
+  lastMessage?: string;
+  lastTime?: string;
 }
 
-export function Sidebar({ conversations, activeConversationId, onSelect }: SidebarProps) {
+interface SidebarProps {
+  rooms: Room[];
+  activeRoomId: string | null;
+  username: string;
+  onSelectRoom: (id: string) => void;
+  showCreateRoom: boolean;
+  onToggleCreate: () => void;
+  onCreateRoom: (name: string) => void;
+}
+
+export default function Sidebar({
+  rooms,
+  activeRoomId,
+  username,
+  onSelectRoom,
+  showCreateRoom,
+  onToggleCreate,
+  onCreateRoom,
+}: SidebarProps) {
+  const [newRoomName, setNewRoomName] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newRoomName.trim()) {
+      onCreateRoom(newRoomName.trim());
+      setNewRoomName('');
+    }
+  };
+
   return (
-    <aside className="sidebar">
+    <div className="sidebar">
       <div className="sidebar-header">
-        <h1 className="sidebar-title">消息</h1>
-        <div className="sidebar-actions">
-          <button className="icon-btn" title="新建会话">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-            </svg>
-          </button>
+        <h2>Chat Room</h2>
+        <div className="sidebar-user">
+          <span className="user-avatar">{username.charAt(0).toUpperCase()}</span>
+          <span className="user-name">{username}</span>
         </div>
       </div>
 
-      <div className="search-bar">
-        <input type="text" placeholder="搜索聊天记录..." />
+      <div className="room-list-header">
+        <span className="room-count">{rooms.length} 个聊天室</span>
+        <button className="add-room-btn" onClick={onToggleCreate} title="创建聊天室">
+          +
+        </button>
       </div>
 
-      <div className="conversation-list">
-        {conversations.map((conv) => {
-          const lastMessage = conv.messages[conv.messages.length - 1];
-          const isActive = conv.id === activeConversationId;
-          const isMyLastMessage = lastMessage?.senderId === 'me';
+      {showCreateRoom && (
+        <form className="create-room-form" onSubmit={handleSubmit}>
+          <input
+            type="text"
+            placeholder="聊天室名称..."
+            value={newRoomName}
+            onChange={(e) => setNewRoomName(e.target.value)}
+            maxLength={30}
+            autoFocus
+          />
+          <button type="submit" disabled={!newRoomName.trim()}>
+            创建
+          </button>
+        </form>
+      )}
 
+      <div className="room-list">
+        {rooms.map((room) => {
+          const isActive = room.id === activeRoomId;
           return (
             <div
-              key={conv.id}
-              className={`conversation-item ${isActive ? 'active' : ''}`}
-              onClick={() => onSelect(conv.id)}
+              key={room.id}
+              className={`room-item ${isActive ? 'active' : ''}`}
+              onClick={() => onSelectRoom(room.id)}
             >
-              <div className="avatar" style={{ background: conv.avatarColor }}>
-                {conv.avatar}
-                {conv.online && <span className="avatar-online" />}
-              </div>
-              <div className="conv-info">
-                <div className="conv-top">
-                  <span className="conv-name">{conv.name}</span>
-                  <span className="conv-time">
-                    {lastMessage ? formatTime(lastMessage.timestamp) : ''}
-                  </span>
-                </div>
-                <div className="conv-preview">
-                  {isMyLastMessage && lastMessage ? `我: ${lastMessage.content}` : lastMessage?.content || ''}
+              <div className="room-avatar">#</div>
+              <div className="room-info">
+                <div className="room-name">{room.name}</div>
+                <div className="room-preview">
+                  {room.lastMessage || '加入聊天...'}
                 </div>
               </div>
+              {room.lastTime && (
+                <div className="room-time">
+                  {formatTime(room.lastTime)}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
-    </aside>
+    </div>
   );
 }

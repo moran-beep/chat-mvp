@@ -1,37 +1,30 @@
-import type { Message } from '../types/chat';
 import { formatTime } from '../utils/time';
+import type { Database } from '../types/supabase';
+
+type Message = Database['public']['Tables']['messages']['Row'];
 
 interface MessageBubbleProps {
   message: Message;
-  isMine: boolean;
+  isOwn: boolean;
+  showAvatar: boolean;
 }
 
-export function MessageBubble({ message, isMine }: MessageBubbleProps) {
+export default function MessageBubble({ message, isOwn, showAvatar }: MessageBubbleProps) {
   return (
-    <div className={`message-row ${isMine ? 'sent' : 'received'}`}>
-      <div className={`message-bubble ${isMine ? 'sent' : 'received'}`}>
-        {message.content}
-        <div className={`message-meta ${isMine ? 'sent' : 'received'}`}>
-          {formatTime(message.timestamp)}
-          {isMine && (
-            <span className="message-status">
-              {message.status === 'read' ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <polyline points="20 6 9 17 4 12" />
-                  <polyline points="12 6 9 9" opacity="0.6" />
-                </svg>
-              ) : message.status === 'delivered' ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10" />
-                  <polyline points="12 6 12 12 16 14" />
-                </svg>
-              )}
-            </span>
-          )}
+    <div className={`message-wrapper ${isOwn ? 'own' : ''}`}>
+      {showAvatar && !isOwn && (
+        <div className="message-avatar">
+          {message.username.charAt(0).toUpperCase()}
+        </div>
+      )}
+      {!showAvatar && !isOwn && <div className="message-avatar-spacer" />}
+      <div className={`message-bubble ${isOwn ? 'own' : ''}`}>
+        {showAvatar && !isOwn && (
+          <div className="message-sender">{message.username}</div>
+        )}
+        <div className="message-text">{message.content}</div>
+        <div className="message-time">
+          {formatTime(message.created_at)}
         </div>
       </div>
     </div>
