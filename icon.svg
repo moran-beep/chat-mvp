@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <g transform="translate(256,256)" fill="white" opacity="0.95">
+    <!-- Chat bubble -->
+    <rect x="-120" y="-160" width="240" height="280" rx="40" fill="white" opacity="0.2"/>
+    <!-- Bubble tail -->
+    <path d="M-80,120 L-120,170 L-60,120 Z" fill="white" opacity="0.2"/>
+    <!-- Message lines -->
+    <rect x="-90" y="-110" width="180" height="16" rx="8" fill="white" opacity="0.9"/>
+    <rect x="-90" y="-70" width="140" height="16" rx="8" fill="white" opacity="0.6"/>
+    <rect x="-90" y="-30" width="160" height="16" rx="8" fill="white" opacity="0.7"/>
+    <!-- Phone icon -->
+    <g transform="translate(140,-100)">
+      <path d="M0,-45 C20,-55 45,-45 45,-20 L45,20 C45,45 20,55 0,45 C-20,35 -30,10 -20,-15 C-15,-30 0,-45 0,-45Z" fill="none" stroke="white" stroke-width="8" stroke-linecap="round"/>
+      <path d="M0,-30 L0,30" stroke="white" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="0" cy="-40" r="6" fill="white"/>
+      <circle cx="-8" cy="-22" r="4" fill="white"/>
+      <circle cx="8" cy="-22" r="4" fill="white"/>
+    </g>
+  </g>
+</svg>
