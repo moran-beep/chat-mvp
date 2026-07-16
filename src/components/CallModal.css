@@ -1,0 +1,248 @@
+/* Call overlay */
+.call-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Call card */
+.call-card {
+  background: rgba(30, 30, 45, 0.95);
+  border-radius: 24px;
+  padding: 48px 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
+  animation: scaleIn 0.25s ease;
+  min-width: 320px;
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* Avatar */
+.call-avatar {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  font-weight: 700;
+  position: relative;
+  z-index: 2;
+}
+
+.call-avatar.self {
+  background: linear-gradient(135deg, #43e97b, #38f9d7);
+}
+
+.call-avatar.connected-avatar {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+}
+
+/* Pulse animation (ringing) */
+.call-pulse {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 3px solid rgba(102, 126, 234, 0.5);
+  animation: pulse 1.5s ease-out infinite;
+  z-index: 1;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* Wave animation (connected) */
+.call-wave {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid rgba(102, 126, 234, 0.3);
+  animation: wave 2s ease-out infinite;
+  z-index: 1;
+}
+
+@keyframes wave {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0.2;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+}
+
+/* Title & subtitle */
+.call-title {
+  color: white;
+  font-size: 22px;
+  font-weight: 600;
+  margin: 8px 0 0 0;
+}
+
+.call-subtitle {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+  margin: 0;
+}
+
+.call-duration {
+  color: #667eea;
+  font-size: 28px;
+  font-weight: 700;
+  font-family: 'SF Mono', 'Roboto Mono', monospace;
+  margin: 4px 0;
+  letter-spacing: 1px;
+}
+
+/* Error */
+.call-error {
+  color: #ff6b6b;
+  font-size: 13px;
+  margin: 4px 0 0 0;
+}
+
+/* Action buttons */
+.call-actions {
+  display: flex;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.call-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s, background 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.call-btn:active {
+  transform: scale(0.92);
+}
+
+.call-btn.accept {
+  background: #22c55e;
+}
+
+.call-btn.accept:hover {
+  background: #16a34a;
+}
+
+.call-btn.decline {
+  background: #ef4444;
+}
+
+.call-btn.decline:hover {
+  background: #dc2626;
+}
+
+.call-btn.mute {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.call-btn.mute:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.call-btn.mute.active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Error-only state */
+.call-card.error {
+  padding: 32px 48px;
+  gap: 12px;
+}
+
+.call-error-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.call-error-text {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 15px;
+  margin: 0;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .call-card {
+    padding: 36px 32px;
+    min-width: 280px;
+  }
+
+  .call-avatar {
+    width: 80px;
+    height: 80px;
+    font-size: 34px;
+  }
+
+  .call-pulse,
+  .call-wave {
+    width: 80px;
+    height: 80px;
+  }
+
+  .call-actions {
+    gap: 20px;
+  }
+
+  .call-btn {
+    width: 50px;
+    height: 50px;
+  }
+}

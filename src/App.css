@@ -47,7 +47,36 @@
   border-bottom: 1px solid #e5e7eb;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   background: #fff;
+}
+
+.call-header-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: #f0f1f5;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.call-header-btn:hover:not(:disabled) {
+  background: #e8eaff;
+  transform: scale(1.05);
+}
+
+.call-header-btn.active {
+  background: #dcfce7;
+  cursor: default;
+}
+
+.call-header-btn:disabled {
+  cursor: default;
 }
 
 .chat-header-info {

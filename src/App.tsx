@@ -3,7 +3,9 @@ import Sidebar from './components/Sidebar';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
 import Login from './components/Login';
+import CallModal from './components/CallModal';
 import { useChat } from './hooks/useChat';
+import { useCall } from './hooks/useCall';
 import './App.css';
 
 export default function App() {
@@ -35,6 +37,19 @@ function ChatApp({ username }: { username: string }) {
     setActiveRoomId,
   } = useChat(username);
 
+  const {
+    status: callStatus,
+    callerName,
+    duration,
+    isMuted,
+    error: callError,
+    startCall,
+    acceptCall,
+    declineCall,
+    endCall,
+    toggleMute,
+  } = useCall(activeRoomId, username);
+
   const [showCreateRoom, setShowCreateRoom] = useState(false);
 
   const handleCreateRoom = (name: string) => {
@@ -50,6 +65,8 @@ function ChatApp({ username }: { username: string }) {
       </div>
     );
   }
+
+  const callActive = callStatus === 'connected' || callStatus === 'calling';
 
   return (
     <div className="app-container">
@@ -69,6 +86,8 @@ function ChatApp({ username }: { username: string }) {
               messages={messages}
               activeRoom={activeRoom}
               username={username}
+              callActive={callActive}
+              onCall={startCall}
             />
             <MessageInput
               onSend={sendMessage}
@@ -81,6 +100,18 @@ function ChatApp({ username }: { username: string }) {
           </div>
         )}
       </div>
+      <CallModal
+        status={callStatus}
+        callerName={callerName}
+        duration={duration}
+        isMuted={isMuted}
+        error={callError}
+        onAccept={acceptCall}
+        onDecline={declineCall}
+        onEnd={endCall}
+        onToggleMute={toggleMute}
+        currentUsername={username}
+      />
     </div>
   );
 }

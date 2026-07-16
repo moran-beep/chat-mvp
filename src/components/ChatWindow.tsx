@@ -10,9 +10,11 @@ interface ChatWindowProps {
   messages: Message[];
   activeRoom: Room;
   username: string;
+  callActive: boolean;
+  onCall: () => void;
 }
 
-export default function ChatWindow({ messages, activeRoom, username }: ChatWindowProps) {
+export default function ChatWindow({ messages, activeRoom, username, callActive, onCall }: ChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,7 +38,7 @@ export default function ChatWindow({ messages, activeRoom, username }: ChatWindo
 
   return (
     <div className="chat-window">
-      <ChatHeader roomName={activeRoom.name} />
+      <ChatHeader roomName={activeRoom.name} callActive={callActive} onCall={onCall} />
       <div className="messages-container">
         {grouped.map((group, gi) => (
           <div key={gi}>
