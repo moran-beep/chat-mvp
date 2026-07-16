@@ -1,9 +1,11 @@
-const CACHE_NAME = 'chat-mvp-v1';
+const CACHE_NAME = 'chat-mvp-v2';
 const ASSETS = [
   '/chat-mvp/',
   '/chat-mvp/index.html',
   '/chat-mvp/manifest.json',
-  '/chat-mvp/icon.svg',
+  '/chat-mvp/icon-192.png',
+  '/chat-mvp/icon-512.png',
+  '/chat-mvp/apple-touch-icon.png',
 ];
 
 // Install: cache core assets
