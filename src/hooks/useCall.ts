@@ -14,27 +14,12 @@ interface SignalPayload {
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
-    // Google STUN — was working before
+    // Google STUN — 同网直连用不到，仅作 NAT 打洞兜底
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Cloudflare STUN — globally reliable
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    // Free public TURN (for symmetric NAT)
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
+    // OpenRelay 免费 TURN — TCP:80 在境内可达（TLS:443 被墙）。用于手机热点/隔离网络的音频中继
+    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
   ],
 };
 
@@ -150,16 +135,16 @@ export function useCall(roomId: string | null, username: string) {
     setIsMuted(false); setError(''); setAudioBlocked(false); setIceState('');
   }, [stopTimer]);
 
-  // Set ICE timeout — if ICE doesn't connect in 30s, show error
+  // Set ICE timeout — if ICE doesn't connect in 45s, show error (TURN relay needs more time)
   const setIceTimeout = useCallback(() => {
     if (iceTimeoutRef.current) clearTimeout(iceTimeoutRef.current);
     iceTimeoutRef.current = setTimeout(() => {
       if (statusRef.current === 'connecting') {
-        console.error('[Call] ICE timeout after 30s, state:', pcRef.current?.iceConnectionState);
+        console.error('[Call] ICE timeout after 45s, state:', pcRef.current?.iceConnectionState);
         setError('连接超时，请确认双方网络通畅');
         setTimeout(() => cleanup(), 3000);
       }
-    }, 30000);
+    }, 45000);
   }, [cleanup]);
 
   const createPeerConnection = useCallback(async (isCaller: boolean) => {
@@ -207,8 +192,8 @@ export function useCall(roomId: string | null, username: string) {
         }
       } else if (state === 'failed') {
         console.error('[Call] ❌ ICE failed!');
-        setError('网络连接失败，请尝试更换网络');
-        setTimeout(() => cleanup(), 3000);
+        setError('连接失败：手机热点会阻止设备间直连，请改用普通WiFi，或稍后重试');
+        setTimeout(() => cleanup(), 4000);
       }
     };
 
