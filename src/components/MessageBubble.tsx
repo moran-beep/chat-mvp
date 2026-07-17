@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { formatTime } from '../utils/time';
 import { parseVoice, formatDuration, VoicePayload } from '../utils/voice';
 import type { Database } from '../types/supabase';
@@ -46,6 +47,7 @@ function VoiceBubble({
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [dragging, setDragging] = useState(false);
   const src = `data:${voice.mime};base64,${voice.audio}`;
 
   const toggle = () => {
@@ -53,6 +55,37 @@ function VoiceBubble({
     if (!a) return;
     if (a.paused) a.play().catch(() => {});
     else a.pause();
+  };
+
+  const seekTo = (clientX: number, el: HTMLElement) => {
+    const a = audioRef.current;
+    if (!a || !a.duration) return;
+    const rect = el.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    a.currentTime = ratio * a.duration;
+    setProgress(ratio);
+  };
+
+  const onWaveDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+    seekTo(e.clientX, e.currentTarget);
+    const a = audioRef.current;
+    if (a && a.paused) a.play().catch(() => {});
+  };
+
+  const onWaveMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragging) return;
+    seekTo(e.clientX, e.currentTarget);
+  };
+
+  const onWaveUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    setDragging(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* noop */
+    }
   };
 
   return (
@@ -76,7 +109,13 @@ function VoiceBubble({
               </svg>
             )}
           </button>
-          <div className="voice-wave">
+          <div
+            className="voice-wave"
+            onPointerDown={onWaveDown}
+            onPointerMove={onWaveMove}
+            onPointerUp={onWaveUp}
+            onPointerCancel={onWaveUp}
+          >
             <div className="voice-wave-fill" style={{ width: `${progress * 100}%` }} />
           </div>
           <span className="voice-duration">{formatDuration(voice.dur)}</span>
@@ -92,6 +131,7 @@ function VoiceBubble({
             setProgress(0);
           }}
           onTimeUpdate={(e) => {
+            if (dragging) return;
             const a = e.currentTarget;
             if (a.duration) setProgress(a.currentTime / a.duration);
           }}

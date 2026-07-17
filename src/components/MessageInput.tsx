@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import './MessageInput.css';
 import { formatDuration } from '../utils/voice';
 
@@ -8,17 +9,20 @@ interface MessageInputProps {
   placeholder?: string;
 }
 
+// 上滑超过该距离(px)进入“取消发送”模式
+const CANCEL_THRESHOLD = 60;
+
 export default function MessageInput({ onSend, onSendVoice, placeholder }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [cancelMode, setCancelMode] = useState(false);
   const [error, setError] = useState('');
-
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recRef = useRef<{ mr: MediaRecorder; stream: MediaStream; start: number } | null>(null);
   const timerRef = useRef<number | null>(null);
   const cancelRef = useRef(false);
-  const leftRef = useRef(false);
+  const startYRef = useRef(0);
 
   useEffect(() => {
     if (inputRef.current) {
@@ -27,12 +31,9 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     }
   }, [content]);
 
-  // 组件卸载时释放资源
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      recRef.current?.stream.getTracks().forEach((t) => t.stop());
-    };
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    recRef.current?.stream.getTracks().forEach((t) => t.stop());
   }, []);
 
   const handleSend = () => {
@@ -62,7 +63,6 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
       mr.onstop = () => {
         const duration = (Date.now() - recRef.current!.start) / 1000;
         stream.getTracks().forEach((t) => t.stop());
-        // 时长过短（误触）或上滑取消则不发送
         if (!cancelRef.current && duration >= 1 && chunks.length > 0) {
           const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
           const reader = new FileReader();
@@ -74,13 +74,14 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
         }
         setRecording(false);
         setSeconds(0);
+        setCancelMode(false);
       };
       mr.start();
       recRef.current = { mr, stream, start: Date.now() };
       cancelRef.current = false;
-      leftRef.current = false;
       setRecording(true);
       setSeconds(0);
+      setCancelMode(false);
       timerRef.current = window.setInterval(() => setSeconds((s) => s + 1), 1000);
     } catch {
       setError('麦克风权限被拒绝，无法录音');
@@ -104,48 +105,68 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     recRef.current = null;
   };
 
+  const onMicDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    startYRef.current = e.clientY;
+    setCancelMode(false);
+    beginRecord();
+  };
+
+  const onMicMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!recording) return;
+    const dy = e.clientY - startYRef.current;
+    setCancelMode(dy < -CANCEL_THRESHOLD);
+  };
+
+  const onMicUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* noop */
+    }
+    const cancel = cancelMode;
+    setCancelMode(false);
+    endRecord(cancel);
+  };
+
   return (
     <div className="message-input-container">
       {error && <div className="rec-error">{error}</div>}
-
       <button
-        className={`mic-btn ${recording ? 'recording' : ''}`}
-        title={recording ? '松开发送，移出按钮取消' : '按住说话'}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          beginRecord();
-        }}
-        onPointerUp={() => {
-          if (leftRef.current) endRecord(true);
-          else endRecord(false);
-        }}
-        onPointerLeave={() => {
-          leftRef.current = true;
-          if (recording) endRecord(true);
-        }}
-        onPointerEnter={() => {
-          leftRef.current = false;
-        }}
+        className={`mic-btn ${recording ? 'recording' : ''} ${cancelMode ? 'cancel' : ''}`}
+        title={recording ? (cancelMode ? '松开取消' : '上滑取消 · 松开发送') : '按住说话'}
+        onPointerDown={onMicDown}
+        onPointerMove={onMicMove}
+        onPointerUp={onMicUp}
+        onPointerCancel={onMicUp}
       >
         {recording ? (
-          <span className="mic-rec-dot" />
+          cancelMode ? (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <span className="mic-rec-dot" />
+          )
         ) : (
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
             <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z" fill="currentColor" />
-            <path
-              d="M19 11a7 7 0 0 1-14 0M12 18v3"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
+            <path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         )}
       </button>
 
       {recording ? (
-        <div className="rec-indicator">
-          <span className="rec-dot" />
-          录音中 {formatDuration(seconds)} · 松开发送
+        <div className={`rec-indicator ${cancelMode ? 'cancel' : ''}`}>
+          {cancelMode ? (
+            '松开手指，取消发送'
+          ) : (
+            <>
+              <span className="rec-dot" />
+              录音中 {formatDuration(seconds)} · 松开发送
+            </>
+          )}
         </div>
       ) : (
         <textarea
