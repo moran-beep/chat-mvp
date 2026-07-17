@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../types/supabase';
+import { parseVoice } from '../utils/voice';
 
 type Room = Database['public']['Tables']['rooms']['Row'];
 type Message = Database['public']['Tables']['messages']['Row'];
@@ -115,7 +116,11 @@ export function useChat(username: string) {
           setRooms((prev) =>
             prev.map((r) =>
               r.id === roomId
-                ? { ...r, lastMessage: newMsg.content, lastTime: newMsg.created_at }
+                ? {
+                    ...r,
+                    lastMessage: parseVoice(newMsg.content) ? '[语音]' : newMsg.content,
+                    lastTime: newMsg.created_at,
+                  }
                 : r
             )
           );
@@ -139,6 +144,21 @@ export function useChat(username: string) {
         room_id: roomId,
         username,
         content: content.trim(),
+      } as any);
+    },
+    [activeRoomId, username]
+  );
+
+  // Send voice message (audio encoded as base64 inside content JSON)
+  const sendVoice = useCallback(
+    async (audioBase64: string, duration: number, mime: string) => {
+      if (!activeRoomId) return;
+      const roomId = activeRoomId;
+      const payload = JSON.stringify({ _voice: true, dur: duration, mime, audio: audioBase64 });
+      await supabase.from('messages').insert({
+        room_id: roomId,
+        username,
+        content: payload,
       } as any);
     },
     [activeRoomId, username]
@@ -195,6 +215,7 @@ export function useChat(username: string) {
     loadingMore,
     loadMore,
     sendMessage,
+    sendVoice,
     createRoom,
     setActiveRoomId,
   };

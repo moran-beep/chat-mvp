@@ -41,6 +41,7 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
     loadingMore,
     loadMore,
     sendMessage,
+    sendVoice,
     createRoom,
     setActiveRoomId,
   } = useChat(username);
@@ -114,6 +115,7 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
             />
             <MessageInput
               onSend={sendMessage}
+              onSendVoice={sendVoice}
               placeholder={`在 #${activeRoom.name} 发消息...`}
             />
           </>
