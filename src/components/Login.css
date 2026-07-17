@@ -72,3 +72,55 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.login-config-toggle {
+  margin-top: 24px;
+  background: none;
+  border: none;
+  color: #667eea;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.login-config {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed #e0e0e0;
+}
+
+.login-config-status {
+  font-size: 13px;
+  margin: 0 0 8px 0;
+}
+
+.login-config-status.ok {
+  color: #2ecc71;
+}
+
+.login-config-status.warn {
+  color: #e67e22;
+}
+
+.login-config-tip {
+  font-size: 12px;
+  color: #999;
+  margin: 0 0 14px 0;
+  line-height: 1.5;
+}
+
+.login-config .login-input {
+  margin-bottom: 10px;
+}
+
+.login-btn-small {
+  margin-top: 4px;
+  font-size: 14px;
+  padding: 10px;
+}
+
+.login-config-ok {
+  color: #2ecc71;
+  font-size: 13px;
+  margin: 8px 0 0 0;
+}
