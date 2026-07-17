@@ -10,28 +10,36 @@ import './App.css';
 
 export default function App() {
   const [username, setUsername] = useState<string>(() => {
-    return sessionStorage.getItem('chat_username') || '';
+    return localStorage.getItem('chat_username') || '';
   });
 
   const handleLogin = (name: string) => {
-    sessionStorage.setItem('chat_username', name);
+    localStorage.setItem('chat_username', name);
     setUsername(name);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('chat_username');
+    setUsername('');
   };
 
   if (!username) {
     return <Login onLogin={handleLogin} />;
   }
 
-  return <ChatApp username={username} />;
+  return <ChatApp username={username} onLogout={handleLogout} />;
 }
 
-function ChatApp({ username }: { username: string }) {
+function ChatApp({ username, onLogout }: { username: string; onLogout: () => void }) {
   const {
     rooms,
     messages,
     activeRoom,
     activeRoomId,
     loading,
+    hasMore,
+    loadingMore,
+    loadMore,
     sendMessage,
     createRoom,
     setActiveRoomId,
@@ -81,6 +89,7 @@ function ChatApp({ username }: { username: string }) {
         showCreateRoom={showCreateRoom}
         onToggleCreate={() => setShowCreateRoom(!showCreateRoom)}
         onCreateRoom={handleCreateRoom}
+        onLogout={onLogout}
       />
       <div className="chat-area">
         {activeRoom ? (
@@ -91,6 +100,9 @@ function ChatApp({ username }: { username: string }) {
               username={username}
               callActive={callActive}
               onCall={startCall}
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={loadMore}
             />
             <MessageInput
               onSend={sendMessage}

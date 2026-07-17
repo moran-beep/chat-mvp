@@ -10,12 +10,19 @@ interface ChatRoom extends Room {
   lastTime?: string;
 }
 
+// 每次加载的消息数量（分页）
+const PAGE_SIZE = 50;
+
 export function useChat(username: string) {
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  // 已加载消息中最早一条的时间戳，用于分页加载更早历史
+  const oldestCreatedAt = useRef<string | null>(null);
 
   // Fetch rooms on mount
   useEffect(() => {
@@ -55,12 +62,15 @@ export function useChat(username: string) {
     };
   }, []);
 
-  // Fetch messages and subscribe when active room changes
+  // Fetch messages (newest page) and subscribe when active room changes
   useEffect(() => {
     if (!activeRoomId) return;
     const roomId = activeRoomId; // narrowed to string
 
     let cancelled = false;
+    oldestCreatedAt.current = null;
+    setHasMore(true);
+    setLoadingMore(false);
 
     // Unsubscribe from previous channel
     if (channelRef.current) {
@@ -70,15 +80,19 @@ export function useChat(username: string) {
 
     async function fetchMessages() {
       setMessages([]);
+      // 取最近一页（倒序后取前 PAGE_SIZE 条），再反转成由旧到新展示
       const { data, error } = await supabase
         .from('messages')
         .select('*')
         .eq('room_id', roomId)
-        .order('created_at', { ascending: true })
-        .limit(100);
+        .order('created_at', { ascending: false })
+        .limit(PAGE_SIZE);
 
       if (!cancelled && !error && data) {
-        setMessages(data as Message[]);
+        const ordered = (data as Message[]).reverse();
+        setMessages(ordered);
+        oldestCreatedAt.current = ordered[0]?.created_at ?? null;
+        setHasMore(ordered.length === PAGE_SIZE);
       }
     }
     fetchMessages();
@@ -148,6 +162,27 @@ export function useChat(username: string) {
     []
   );
 
+  // 加载更早的历史消息（分页向上翻）
+  const loadMore = useCallback(async () => {
+    if (!activeRoomId || loadingMore || !hasMore || !oldestCreatedAt.current) return;
+    setLoadingMore(true);
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('room_id', activeRoomId)
+      .lt('created_at', oldestCreatedAt.current)
+      .order('created_at', { ascending: false })
+      .limit(PAGE_SIZE);
+
+    if (!error && data) {
+      const older = (data as Message[]).reverse();
+      setMessages((prev) => [...older, ...prev]);
+      if (older.length > 0) oldestCreatedAt.current = older[0].created_at;
+      setHasMore(older.length === PAGE_SIZE);
+    }
+    setLoadingMore(false);
+  }, [activeRoomId, loadingMore, hasMore]);
+
   const activeRoom = rooms.find((r) => r.id === activeRoomId) || null;
 
   return {
@@ -156,6 +191,9 @@ export function useChat(username: string) {
     activeRoom,
     activeRoomId,
     loading,
+    hasMore,
+    loadingMore,
+    loadMore,
     sendMessage,
     createRoom,
     setActiveRoomId,

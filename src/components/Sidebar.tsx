@@ -18,6 +18,7 @@ interface SidebarProps {
   showCreateRoom: boolean;
   onToggleCreate: () => void;
   onCreateRoom: (name: string) => void;
+  onLogout: () => void;
 }
 
 export default function Sidebar({
@@ -28,6 +29,7 @@ export default function Sidebar({
   showCreateRoom,
   onToggleCreate,
   onCreateRoom,
+  onLogout,
 }: SidebarProps) {
   const [newRoomName, setNewRoomName] = useState('');
 
@@ -46,6 +48,9 @@ export default function Sidebar({
         <div className="sidebar-user">
           <span className="user-avatar">{username.charAt(0).toUpperCase()}</span>
           <span className="user-name">{username}</span>
+          <button className="logout-btn" onClick={onLogout} title="退出登录（切换账号）">
+            退出
+          </button>
         </div>
       </div>
 

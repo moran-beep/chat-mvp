@@ -104,6 +104,32 @@
   padding: 16px 24px;
 }
 
+.load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 12px;
+}
+
+.load-more-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  color: #667eea;
+  background: #f3f4ff;
+  border: 1px solid #e0e3ff;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: #e8eaff;
+}
+
+.load-more-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .empty-chat {
   display: flex;
   align-items: center;
