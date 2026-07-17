@@ -170,9 +170,10 @@ export default function CallModal({
   if (error && status === 'idle') {
     return (
       <div className="call-overlay">
-        <div className="call-card error">
+        <div className="call-card error" onClick={onEnd} title="点击关闭">
           <div className="call-error-icon">!</div>
           <p className="call-error-text">{error}</p>
+          <p className="call-error-hint">（点击关闭）</p>
         </div>
       </div>
     );

@@ -322,7 +322,8 @@ export function useCall(roomId: string | null, username: string) {
             } catch (err) {
               console.error('[Call] Offer handling failed:', err);
               setError('连接失败');
-              cleanup();
+              setStatus('idle');
+              setTimeout(() => cleanup(), 2000);
             }
           }
           break;
@@ -338,7 +339,8 @@ export function useCall(roomId: string | null, username: string) {
             } catch (err) {
               console.error('[Call] Answer handling failed:', err);
               setError('连接失败');
-              cleanup();
+              setStatus('idle');
+              setTimeout(() => cleanup(), 2000);
             }
           }
           break;
@@ -414,7 +416,8 @@ export function useCall(roomId: string | null, username: string) {
     } catch (err: any) {
       console.error('[Call] getUserMedia failed:', err);
       setError(err.name === 'NotAllowedError' ? '请允许麦克风权限' : '无法启动通话');
-      cleanup();
+      setStatus('idle');
+      setTimeout(() => cleanup(), 2000);
     }
   }, [roomId, username, status, cleanup]);
 
@@ -431,8 +434,10 @@ export function useCall(roomId: string | null, username: string) {
       });
       console.log('[Call] Accepted, waiting for offer...');
     } catch (err: any) {
-      setError(err.name === 'NotAllowedError' ? '请允许麦克风权限' : '无法接听通话');
-      cleanup();
+      console.error('[Call] Callee getUserMedia failed:', err);
+      setError(err.name === 'NotAllowedError' ? '请允许麦克风权限后重试' : '无法接听：' + (err.message || '麦克风不可用'));
+      setStatus('idle');
+      setTimeout(() => cleanup(), 3000);
     }
   }, [username, cleanup]);
 
