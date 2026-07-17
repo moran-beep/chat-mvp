@@ -22,6 +22,7 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
   const recRef = useRef<{ mr: MediaRecorder; stream: MediaStream; start: number } | null>(null);
   const timerRef = useRef<number | null>(null);
   const cancelRef = useRef(false);
+  const abortRef = useRef(false);
   const startYRef = useRef(0);
 
   useEffect(() => {
@@ -55,29 +56,38 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     setError('');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (abortRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       const mr = new MediaRecorder(stream);
       const chunks: BlobPart[] = [];
+      const start = Date.now();
       mr.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunks.push(e.data);
       };
       mr.onstop = () => {
-        const duration = (Date.now() - recRef.current!.start) / 1000;
+        const duration = (Date.now() - start) / 1000;
         stream.getTracks().forEach((t) => t.stop());
         if (!cancelRef.current && duration >= 1 && chunks.length > 0) {
           const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
           const reader = new FileReader();
           reader.onloadend = () => {
             const base64 = (reader.result as string).split(',')[1];
-            onSendVoice(base64, Math.round(duration), mr.mimeType || 'audio/webm');
+            if (base64) onSendVoice(base64, Math.round(duration), mr.mimeType || 'audio/webm');
           };
           reader.readAsDataURL(blob);
+        } else if (!cancelRef.current) {
+          setError('说话时间太短');
+          setTimeout(() => setError(''), 1500);
         }
+        recRef.current = null;
         setRecording(false);
         setSeconds(0);
         setCancelMode(false);
       };
       mr.start();
-      recRef.current = { mr, stream, start: Date.now() };
+      recRef.current = { mr, stream, start };
       cancelRef.current = false;
       setRecording(true);
       setSeconds(0);
@@ -102,7 +112,6 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     } catch {
       /* noop */
     }
-    recRef.current = null;
   };
 
   const onMicDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -110,6 +119,7 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     e.currentTarget.setPointerCapture(e.pointerId);
     startYRef.current = e.clientY;
     setCancelMode(false);
+    abortRef.current = false;
     beginRecord();
   };
 
@@ -124,6 +134,12 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
       /* noop */
+    }
+    if (!recRef.current) {
+      abortRef.current = true;
+      setRecording(false);
+      setCancelMode(false);
+      return;
     }
     const cancel = cancelMode;
     setCancelMode(false);
