@@ -11,7 +11,9 @@ interface ChatWindowProps {
   activeRoom: Room;
   username: string;
   callActive: boolean;
-  onCall: () => void;
+  onCall: (target: string) => void;
+  participants: string[];
+  onlineUsers: string[];
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -23,6 +25,8 @@ export default function ChatWindow({
   username,
   callActive,
   onCall,
+  participants,
+  onlineUsers,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -69,7 +73,14 @@ export default function ChatWindow({
 
   return (
     <div className="chat-window">
-      <ChatHeader roomName={activeRoom.name} callActive={callActive} onCall={onCall} />
+      <ChatHeader
+        roomName={activeRoom.name}
+        callActive={callActive}
+        currentUser={username}
+        participants={participants}
+        onlineUsers={onlineUsers}
+        onCall={onCall}
+      />
       <div className="messages-container" ref={containerRef}>
         {hasMore && (
           <div className="load-more-wrap">

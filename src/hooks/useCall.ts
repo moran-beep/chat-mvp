@@ -31,6 +31,7 @@ export function useCall(roomId: string | null, username: string) {
   const [error, setError] = useState('');
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [iceState, setIceState] = useState('');
+  const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -244,8 +245,28 @@ export function useCall(roomId: string | null, username: string) {
     if (!roomId || !username) return;
 
     channelReadyRef.current = false;
+    setOnlineUsers([]);
     const channel = supabase.channel(`call-${roomId}`, {
-      config: { broadcast: { self: false } },
+      config: {
+        broadcast: { self: false },
+        presence: { key: username },
+      },
+    });
+
+    // 在线成员（presence）：用于指定呼叫聊天室内的某个人
+    channel.on('presence', { event: 'sync' }, () => {
+      try {
+        const state = channel.presenceState() as Record<string, { username?: string }[]>;
+        const users: string[] = [];
+        for (const key of Object.keys(state)) {
+          for (const p of state[key]) {
+            if (p?.username && !users.includes(p.username)) users.push(p.username);
+          }
+        }
+        setOnlineUsers(users);
+      } catch (e) {
+        console.error('[Call] presence sync error', e);
+      }
     });
 
     channel.on('broadcast', { event: 'signal' }, async (msg) => {
@@ -365,6 +386,7 @@ export function useCall(roomId: string | null, username: string) {
     channel.subscribe((s) => {
       if (s === 'SUBSCRIBED') {
         channelReadyRef.current = true;
+        channel.track({ username }).catch((e) => console.error('[Call] track failed', e));
         console.log('[Call] Channel ready:', roomId);
       } else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
         console.error('[Call] Channel error:', s);
@@ -388,7 +410,7 @@ export function useCall(roomId: string | null, username: string) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, username]);
 
-  const startCall = useCallback(async () => {
+  const startCall = useCallback(async (target?: string) => {
     if (!roomId || statusRef.current !== 'idle') return;
     if (!channelReadyRef.current) {
       setError('连接未就绪，请稍后再试');
@@ -400,12 +422,13 @@ export function useCall(roomId: string | null, username: string) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
       console.log('[Call] Got mic, tracks:', stream.getTracks().length);
+      remoteUsernameRef.current = target || '';
       setStatus('calling');
       setCallerName(username);
       channelRef.current?.send({
         type: 'broadcast',
         event: 'signal',
-        payload: { type: 'call-invite', from: username, caller: username } as SignalPayload,
+        payload: { type: 'call-invite', from: username, caller: username, to: target || undefined } as SignalPayload,
       });
       callTimeoutRef.current = setTimeout(() => {
         if (statusRef.current === 'calling') {
@@ -496,7 +519,7 @@ export function useCall(roomId: string | null, username: string) {
   }, []);
 
   return {
-    status, callerName, duration, isMuted, error, audioBlocked, iceState,
+    status, callerName, duration, isMuted, error, audioBlocked, iceState, onlineUsers,
     startCall, acceptCall, declineCall, endCall, toggleMute,
     unlockAudio: ensureAudioPlaying,
   };

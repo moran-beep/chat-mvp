@@ -53,6 +53,7 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
     error: callError,
     audioBlocked,
     iceState,
+    onlineUsers,
     startCall,
     acceptCall,
     declineCall,
@@ -67,6 +68,11 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
     createRoom(name);
     setShowCreateRoom(false);
   };
+
+  // 本聊天室内出现过的成员（用于指定呼叫对象），排除自己
+  const participants = Array.from(new Set(messages.map((m) => m.username))).filter(
+    (u) => u && u !== username
+  );
 
   if (loading) {
     return (
@@ -100,6 +106,8 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
               username={username}
               callActive={callActive}
               onCall={startCall}
+              participants={participants}
+              onlineUsers={onlineUsers}
               hasMore={hasMore}
               loadingMore={loadingMore}
               onLoadMore={loadMore}
