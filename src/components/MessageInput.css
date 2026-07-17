@@ -24,7 +24,9 @@
   transition: background 0.2s, color 0.2s;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .mic-btn:hover {

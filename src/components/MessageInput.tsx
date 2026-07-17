@@ -12,6 +12,20 @@ interface MessageInputProps {
 // 上滑超过该距离(px)进入“取消发送”模式
 const CANCEL_THRESHOLD = 60;
 
+// 选择当前浏览器支持的录音 MIME（iOS Safari 用 audio/mp4，桌面 Chrome 用 webm/opus）
+function pickMime(): string {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const candidates = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+  for (const m of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(m)) return m;
+    } catch {
+      /* ignore */
+    }
+  }
+  return '';
+}
+
 export default function MessageInput({ onSend, onSendVoice, placeholder }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [recording, setRecording] = useState(false);
@@ -22,7 +36,8 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
   const recRef = useRef<{ mr: MediaRecorder; stream: MediaStream; start: number } | null>(null);
   const timerRef = useRef<number | null>(null);
   const cancelRef = useRef(false);
-  const abortRef = useRef(false);
+  const pendingReleaseRef = useRef(false);
+  const pendingCancelRef = useRef(false);
   const startYRef = useRef(0);
 
   useEffect(() => {
@@ -51,16 +66,28 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     }
   };
 
+  const endRecord = (cancel: boolean) => {
+    const m = recRef.current;
+    if (!m) return;
+    cancelRef.current = cancel;
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    try {
+      if (m.mr.state !== 'inactive') m.mr.stop();
+    } catch {
+      /* noop */
+    }
+  };
+
   const beginRecord = async () => {
     if (recording) return;
     setError('');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (abortRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
-      const mr = new MediaRecorder(stream);
+      const mimeType = pickMime();
+      const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       const chunks: BlobPart[] = [];
       const start = Date.now();
       mr.ondataavailable = (e) => {
@@ -93,24 +120,13 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
       setSeconds(0);
       setCancelMode(false);
       timerRef.current = window.setInterval(() => setSeconds((s) => s + 1), 1000);
+      if (pendingReleaseRef.current) {
+        pendingReleaseRef.current = false;
+        endRecord(pendingCancelRef.current);
+      }
     } catch {
       setError('麦克风权限被拒绝，无法录音');
       setTimeout(() => setError(''), 2500);
-    }
-  };
-
-  const endRecord = (cancel: boolean) => {
-    const m = recRef.current;
-    if (!m) return;
-    cancelRef.current = cancel;
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    try {
-      if (m.mr.state !== 'inactive') m.mr.stop();
-    } catch {
-      /* noop */
     }
   };
 
@@ -119,7 +135,8 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     e.currentTarget.setPointerCapture(e.pointerId);
     startYRef.current = e.clientY;
     setCancelMode(false);
-    abortRef.current = false;
+    pendingReleaseRef.current = false;
+    pendingCancelRef.current = false;
     beginRecord();
   };
 
@@ -136,9 +153,10 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
       /* noop */
     }
     if (!recRef.current) {
-      abortRef.current = true;
-      setRecording(false);
-      setCancelMode(false);
+      // 录音尚未真正建立（典型：iOS 麦克风权限弹窗期间用户已松手）
+      // 不立即中止，等 getUserMedia 完成、mr.start 后再按用户意图结束
+      pendingReleaseRef.current = true;
+      pendingCancelRef.current = cancelMode;
       return;
     }
     const cancel = cancelMode;
