@@ -1,42 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { TRTC, genUserSig, isTrtcConfigured, getTrtcConfig } from '../lib/trtc';
 
 export type CallStatus = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected';
 
+// 信令协议：仅用于「来电 / 接听 / 挂断」通知。音视频流本身全部走 TRTC（腾讯云中转，跨网稳定）。
 interface SignalPayload {
-  type: 'call-invite' | 'call-accepted' | 'call-declined' | 'call-ended' | 'webrtc-offer' | 'webrtc-answer' | 'webrtc-ice';
+  type: 'call-invite' | 'call-accepted' | 'call-declined' | 'call-ended';
   from: string;
   to?: string;
-  sdp?: RTCSessionDescriptionInit;
-  candidate?: RTCIceCandidateInit;
   caller?: string;
+  callId?: string; // 用作 TRTC 房间号，保证每次通话唯一
 }
-
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    // Google STUN — was working before
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    // Cloudflare STUN — globally reliable
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    // Free public TURN (for symmetric NAT)
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-  ],
-};
 
 export function useCall(roomId: string | null, username: string) {
   const [status, setStatus] = useState<CallStatus>('idle');
@@ -44,74 +19,22 @@ export function useCall(roomId: string | null, username: string) {
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState('');
-  const [audioBlocked, setAudioBlocked] = useState(false);
-  const [iceState, setIceState] = useState('');
+  // 以下两项仅为兼容现有 UI，TRTC 自动播放远端音频，无需手动解锁音频
+  const [audioBlocked] = useState(false);
+  const [iceState] = useState('');
 
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const trtcRef = useRef<any>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusRef = useRef<CallStatus>('idle');
   const usernameRef = useRef(username);
-  const remoteUsernameRef = useRef<string>('');
-  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const remoteUsernameRef = useRef('');
+  const callIdRef = useRef('');
   const channelReadyRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const iceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const audioRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { usernameRef.current = username; }, [username]);
-
-  // Create audio element for remote audio
-  useEffect(() => {
-    const audio = document.createElement('audio');
-    audio.setAttribute('playsinline', '');
-    audio.autoplay = true;
-    audio.muted = false;
-    audio.volume = 1;
-    audio.style.position = 'fixed';
-    audio.style.top = '-1px';
-    audio.style.left = '-1px';
-    audio.style.width = '1px';
-    audio.style.height = '1px';
-    audio.style.opacity = '0';
-    audio.style.pointerEvents = 'none';
-    document.body.appendChild(audio);
-
-    // Debug: log audio element events
-    audio.addEventListener('playing', () => console.log('[Call] 🔊 Audio element: playing'));
-    audio.addEventListener('pause', () => console.log('[Call] ⏸️ Audio element: paused'));
-    audio.addEventListener('waiting', () => console.log('[Call] ⏳ Audio element: waiting for data'));
-    audio.addEventListener('error', (e) => console.error('[Call] ❌ Audio element error:', e));
-
-    remoteAudioRef.current = audio;
-    return () => {
-      audio.remove();
-      remoteAudioRef.current = null;
-    };
-  }, []);
-
-  // Try to play remote audio
-  const ensureAudioPlaying = useCallback(() => {
-    const audio = remoteAudioRef.current;
-    if (!audio) return;
-    if (!audio.srcObject) return;
-    audio.muted = false;
-    audio.volume = 1;
-    const p = audio.play();
-    if (p) {
-      p.then(() => {
-        setAudioBlocked(false);
-        console.log('[Call] ✅ Audio playing OK');
-      })
-      .catch((err) => {
-        console.warn('[Call] ❌ Audio play blocked:', err.message);
-        setAudioBlocked(true);
-      });
-    }
-  }, []);
 
   const startTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -123,312 +46,139 @@ export function useCall(roomId: string | null, username: string) {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   }, []);
 
-  const flushPendingCandidates = useCallback(async () => {
-    const pc = pcRef.current;
-    if (!pc) return;
-    const candidates = pendingCandidatesRef.current;
-    pendingCandidatesRef.current = [];
-    for (const c of candidates) {
-      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
-    }
-  }, []);
-
   const cleanup = useCallback(() => {
     stopTimer();
     if (callTimeoutRef.current) { clearTimeout(callTimeoutRef.current); callTimeoutRef.current = null; }
-    if (iceTimeoutRef.current) { clearTimeout(iceTimeoutRef.current); iceTimeoutRef.current = null; }
-    if (audioRetryRef.current) { clearInterval(audioRetryRef.current); audioRetryRef.current = null; }
-    if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
+    if (trtcRef.current) {
+      try { trtcRef.current.exitRoom(); } catch { /* ignore */ }
+      trtcRef.current = null;
     }
-    if (remoteAudioRef.current) { remoteAudioRef.current.srcObject = null; }
-    pendingCandidatesRef.current = [];
-    remoteUsernameRef.current = '';
     setStatus('idle'); setCallerName(''); setDuration(0);
-    setIsMuted(false); setError(''); setAudioBlocked(false); setIceState('');
+    setIsMuted(false); setError('');
+    remoteUsernameRef.current = '';
+    callIdRef.current = '';
   }, [stopTimer]);
 
-  // Set ICE timeout — if ICE doesn't connect in 30s, show error
-  const setIceTimeout = useCallback(() => {
-    if (iceTimeoutRef.current) clearTimeout(iceTimeoutRef.current);
-    iceTimeoutRef.current = setTimeout(() => {
-      if (statusRef.current === 'connecting') {
-        console.error('[Call] ICE timeout after 30s, state:', pcRef.current?.iceConnectionState);
-        setError('连接超时，请确认双方网络通畅');
-        setTimeout(() => cleanup(), 3000);
-      }
-    }, 30000);
-  }, [cleanup]);
-
-  const createPeerConnection = useCallback(async (isCaller: boolean) => {
-    const pc = new RTCPeerConnection(RTC_CONFIG);
-
-    // Add local tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current!);
-        console.log('[Call] Added local track:', track.kind, 'enabled:', track.enabled);
-      });
+  // 进入 TRTC 房间并发布本地麦克风，双方进同一房间即连通（腾讯云负责跨网传输）
+  const enterRoom = useCallback(async () => {
+    const callId = callIdRef.current;
+    if (!callId) { setError('通话参数缺失'); cleanup(); return; }
+    if (!isTrtcConfigured()) {
+      setError('未配置音视频服务（TRTC），暂无法跨网通话');
+      setTimeout(() => cleanup(), 2500);
+      return;
     }
+    try {
+      const trtc = TRTC.create();
+      trtcRef.current = trtc;
 
-    // Remote audio
-    pc.ontrack = (event) => {
-      console.log('[Call] 📡 ontrack! streams:', event.streams.length, 'track:', event.track.kind, 'readyState:', event.track.readyState);
-      const audio = remoteAudioRef.current;
-      if (!audio) return;
-      const stream = event.streams[0] || new MediaStream([event.track]);
-      audio.srcObject = stream;
-      ensureAudioPlaying();
-      // Retry when track actually starts receiving data
-      event.track.onunmute = () => {
-        console.log('[Call] Remote track unmuted — retrying audio');
-        ensureAudioPlaying();
-      };
-    };
-
-    // ICE connection — drives actual 'connected' status
-    pc.oniceconnectionstatechange = () => {
-      const state = pc.iceConnectionState;
-      console.log('[Call] 🧊 ICE state:', state);
-      setIceState(state);
-
-      if (state === 'connected' || state === 'completed') {
-        if (statusRef.current === 'connecting') {
-          console.log('[Call] ✅ ICE connected!');
-          setStatus('connected');
-          startTimer();
-          if (iceTimeoutRef.current) { clearTimeout(iceTimeoutRef.current); iceTimeoutRef.current = null; }
-          // Ensure audio plays after connection
-          setTimeout(() => ensureAudioPlaying(), 300);
-          if (audioRetryRef.current) clearInterval(audioRetryRef.current);
-          audioRetryRef.current = setInterval(() => ensureAudioPlaying(), 2000);
-        }
-      } else if (state === 'failed') {
-        console.error('[Call] ❌ ICE failed!');
-        setError('网络连接失败，请尝试更换网络');
-        setTimeout(() => cleanup(), 3000);
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      console.log('[Call] Peer connection state:', pc.connectionState);
-    };
-
-    // Trickle ICE — send candidates immediately as they're gathered
-    pc.onicecandidate = (event) => {
-      if (event.candidate && channelRef.current) {
-        channelRef.current.send({
-          type: 'broadcast',
-          event: 'signal',
-          payload: {
-            type: 'webrtc-ice',
-            from: usernameRef.current,
-            to: remoteUsernameRef.current || undefined,
-            candidate: event.candidate.toJSON(),
-          } as SignalPayload,
-        });
-      }
-    };
-
-    pcRef.current = pc;
-
-    if (isCaller) {
-      // Create offer and send IMMEDIATELY (trickle ICE — no waiting)
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'signal',
-        payload: {
-          type: 'webrtc-offer',
-          from: usernameRef.current,
-          to: remoteUsernameRef.current || undefined,
-          sdp: offer,
-        } as SignalPayload,
+      trtc.on(TRTC.EVENT.REMOTE_AUDIO_AVAILABLE, (event: any) => {
+        console.log('[Call] 📡 收到远端音频:', event?.userId);
       });
-      console.log('[Call] Sent offer (trickle ICE)');
-      setStatus('connecting');
-      setIceTimeout();
-    }
-  }, [cleanup, ensureAudioPlaying, startTimer, setIceTimeout]);
+      trtc.on(TRTC.EVENT.CONNECTION_STATE_CHANGED, (event: any) => {
+        console.log('[Call] 🔗 TRTC 连接状态:', event?.state);
+      });
+      trtc.on(TRTC.EVENT.KICKED_OUT, () => {
+        console.warn('[Call] 被移出房间');
+        setError('通话已结束');
+        setTimeout(() => cleanup(), 1000);
+      });
 
-  // Signaling channel
+      const userSig = await genUserSig(usernameRef.current);
+      await trtc.enterRoom({
+        sdkAppId: getTrtcConfig().sdkAppId,
+        userId: usernameRef.current,
+        strRoomId: callId,
+        userSig,
+        scene: TRTC.TYPE.SCENE_RTC,
+      });
+      await trtc.startLocalAudio();
+      console.log('[Call] ✅ 进房并发布音频成功');
+
+      setStatus('connected');
+      startTimer();
+    } catch (err: any) {
+      console.error('[Call] 进房失败:', err);
+      setError('通话连接失败：' + (err?.message || '服务未配置'));
+      setTimeout(() => cleanup(), 2500);
+    }
+  }, [cleanup, startTimer]);
+
+  // 信令通道（Supabase broadcast）：来电/接听/挂断
   useEffect(() => {
     if (!roomId || !username) return;
-
     channelReadyRef.current = false;
-    const channel = supabase.channel(`call-${roomId}`, {
-      config: { broadcast: { self: false } },
-    });
+    const channel = supabase.channel(`call-${roomId}`, { config: { broadcast: { self: false } } });
 
-    channel.on('broadcast', { event: 'signal' }, async (msg) => {
+    channel.on('broadcast', { event: 'signal' }, async (msg: any) => {
       const payload = msg.payload as SignalPayload;
       if (!payload) return;
       if (payload.to && payload.to !== usernameRef.current) return;
       if (payload.from === usernameRef.current) return;
 
-      console.log('[Call] Signal:', payload.type, 'from:', payload.from);
+      console.log('[Call] 信令:', payload.type, '来自', payload.from);
 
       switch (payload.type) {
-        case 'call-invite': {
+        case 'call-invite':
           if (statusRef.current === 'idle') {
             remoteUsernameRef.current = payload.from;
+            callIdRef.current = payload.callId || '';
             setCallerName(payload.caller || payload.from);
             setStatus('ringing');
           }
           break;
-        }
-
-        case 'call-accepted': {
+        case 'call-accepted':
           if (statusRef.current === 'calling') {
             remoteUsernameRef.current = payload.from;
-            try {
-              await createPeerConnection(true);
-            } catch (err) {
-              console.error('[Call] PC create failed:', err);
-              setError('连接失败');
-              cleanup();
-            }
+            if (payload.callId) callIdRef.current = payload.callId;
+            setStatus('connecting');
+            await enterRoom();
           }
           break;
-        }
-
-        case 'call-declined': {
+        case 'call-declined':
           if (statusRef.current === 'calling') {
             setError('对方拒绝了通话');
             setTimeout(() => cleanup(), 1500);
           }
           break;
-        }
-
-        case 'call-ended': {
+        case 'call-ended':
           if (statusRef.current !== 'idle') cleanup();
           break;
-        }
-
-        case 'webrtc-offer': {
-          if (statusRef.current === 'ringing' || statusRef.current === 'idle') {
-            try {
-              if (payload.from) remoteUsernameRef.current = payload.from;
-              await createPeerConnection(false);
-              const pc = pcRef.current;
-              if (pc && payload.sdp) {
-                await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-                await flushPendingCandidates();
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                // Send answer IMMEDIATELY (trickle ICE)
-                channel.send({
-                  type: 'broadcast',
-                  event: 'signal',
-                  payload: {
-                    type: 'webrtc-answer',
-                    from: usernameRef.current,
-                    to: remoteUsernameRef.current,
-                    sdp: answer,
-                  } as SignalPayload,
-                });
-                console.log('[Call] Sent answer (trickle ICE)');
-                setStatus('connecting');
-                setIceTimeout();
-              }
-            } catch (err) {
-              console.error('[Call] Offer handling failed:', err);
-              setError('连接失败');
-              cleanup();
-            }
-          }
-          break;
-        }
-
-        case 'webrtc-answer': {
-          if (statusRef.current === 'connecting' && pcRef.current && payload.sdp) {
-            try {
-              await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-              await flushPendingCandidates();
-              console.log('[Call] Remote description set (answer), waiting for ICE...');
-              setIceTimeout();
-            } catch (err) {
-              console.error('[Call] Answer handling failed:', err);
-              setError('连接失败');
-              cleanup();
-            }
-          }
-          break;
-        }
-
-        case 'webrtc-ice': {
-          if (payload.candidate) {
-            const pc = pcRef.current;
-            if (pc && pc.remoteDescription) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-              } catch {}
-            } else {
-              pendingCandidatesRef.current.push(payload.candidate);
-            }
-          }
-          break;
-        }
       }
     });
 
-    channel.subscribe((s) => {
-      if (s === 'SUBSCRIBED') {
-        channelReadyRef.current = true;
-        console.log('[Call] Channel ready:', roomId);
-      } else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
-        console.error('[Call] Channel error:', s);
-        channelReadyRef.current = false;
-      }
+    channel.subscribe((s: string) => {
+      if (s === 'SUBSCRIBED') { channelReadyRef.current = true; console.log('[Call] 信令通道就绪:', roomId); }
+      else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') { channelReadyRef.current = false; }
     });
     channelRef.current = channel;
 
     return () => {
       if (statusRef.current !== 'idle' && statusRef.current !== 'ringing') {
-        channel.send({
-          type: 'broadcast',
-          event: 'signal',
-          payload: { type: 'call-ended', from: usernameRef.current } as SignalPayload,
-        });
+        channel.send({ type: 'broadcast', event: 'signal', payload: { type: 'call-ended', from: usernameRef.current } as SignalPayload });
       }
       channelReadyRef.current = false;
       supabase.removeChannel(channel);
       channelRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, username]);
+  }, [roomId, username, enterRoom, cleanup]);
 
   const startCall = useCallback(async () => {
     if (!roomId || statusRef.current !== 'idle') return;
-    if (!channelReadyRef.current) {
-      setError('连接未就绪，请稍后再试');
-      setTimeout(() => setError(''), 2000);
-      return;
-    }
-    setError('');
+    if (!channelReadyRef.current) { setError('连接未就绪，请稍后再试'); setTimeout(() => setError(''), 2000); return; }
+    if (!isTrtcConfigured()) { setError('未配置音视频服务（TRTC），暂无法跨网通话'); return; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = stream;
-      console.log('[Call] Got mic, tracks:', stream.getTracks().length);
+      await navigator.mediaDevices.getUserMedia({ audio: true }); // 预检查麦克风权限
+      callIdRef.current = `call-${roomId}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
       setStatus('calling');
       setCallerName(username);
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'signal',
-        payload: { type: 'call-invite', from: username, caller: username } as SignalPayload,
-      });
+      channelRef.current?.send({ type: 'broadcast', event: 'signal', payload: { type: 'call-invite', from: username, caller: username, callId: callIdRef.current } as SignalPayload });
       callTimeoutRef.current = setTimeout(() => {
-        if (statusRef.current === 'calling') {
-          setError('无人接听');
-          setTimeout(() => cleanup(), 1500);
-        }
+        if (statusRef.current === 'calling') { setError('无人接听'); setTimeout(() => cleanup(), 1500); }
       }, 30000);
     } catch (err: any) {
-      console.error('[Call] getUserMedia failed:', err);
-      setError(err.name === 'NotAllowedError' ? '请允许麦克风权限' : '无法启动通话');
+      console.error('[Call] 启动失败:', err);
+      setError(err?.name === 'NotAllowedError' ? '请允许麦克风权限' : '无法发起通话');
       cleanup();
     }
   }, [roomId, username, status, cleanup]);
@@ -437,77 +187,53 @@ export function useCall(roomId: string | null, username: string) {
     if (statusRef.current !== 'ringing') return;
     setError('');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = stream;
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'signal',
-        payload: { type: 'call-accepted', from: username, to: remoteUsernameRef.current } as SignalPayload,
-      });
-      console.log('[Call] Accepted, waiting for offer...');
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      channelRef.current?.send({ type: 'broadcast', event: 'signal', payload: { type: 'call-accepted', from: username, to: remoteUsernameRef.current, callId: callIdRef.current } as SignalPayload });
+      setStatus('connecting');
+      await enterRoom();
     } catch (err: any) {
-      setError(err.name === 'NotAllowedError' ? '请允许麦克风权限' : '无法接听通话');
+      setError(err?.name === 'NotAllowedError' ? '请允许麦克风权限' : '无法接听通话');
       cleanup();
     }
-  }, [username, cleanup]);
+  }, [username, cleanup, enterRoom]);
 
   const declineCall = useCallback(() => {
     if (statusRef.current !== 'ringing') return;
-    channelRef.current?.send({
-      type: 'broadcast',
-      event: 'signal',
-      payload: { type: 'call-declined', from: username, to: remoteUsernameRef.current } as SignalPayload,
-    });
+    channelRef.current?.send({ type: 'broadcast', event: 'signal', payload: { type: 'call-declined', from: username, to: remoteUsernameRef.current } as SignalPayload });
     cleanup();
   }, [username, cleanup]);
 
   const endCall = useCallback(() => {
     if (channelRef.current && statusRef.current !== 'idle' && statusRef.current !== 'ringing') {
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'signal',
-        payload: { type: 'call-ended', from: username, to: remoteUsernameRef.current || undefined } as SignalPayload,
-      });
+      channelRef.current.send({ type: 'broadcast', event: 'signal', payload: { type: 'call-ended', from: username, to: remoteUsernameRef.current || undefined } as SignalPayload });
     }
     cleanup();
   }, [username, status, cleanup]);
 
   const toggleMute = useCallback(() => {
-    if (localStreamRef.current) {
-      const t = localStreamRef.current.getAudioTracks()[0];
-      if (t) { t.enabled = !t.enabled; setIsMuted(!t.enabled); }
-    }
+    const trtc = trtcRef.current;
+    if (!trtc) return;
+    setIsMuted((m) => {
+      const next = !m;
+      trtc.updateLocalAudio({ mute: next }).catch(() => {});
+      return next;
+    });
   }, []);
 
-  // Unlock audio on user interaction
-  useEffect(() => {
-    if (status !== 'connected') return;
-    const unlock = () => ensureAudioPlaying();
-    document.addEventListener('click', unlock);
-    document.addEventListener('touchstart', unlock);
-    return () => {
-      document.removeEventListener('click', unlock);
-      document.removeEventListener('touchstart', unlock);
-    };
-  }, [status, ensureAudioPlaying]);
+  const unlockAudio = useCallback(() => {}, []);
 
   useEffect(() => {
     return () => {
       if (channelRef.current && statusRef.current !== 'idle' && statusRef.current !== 'ringing') {
-        channelRef.current.send({
-          type: 'broadcast',
-          event: 'signal',
-          payload: { type: 'call-ended', from: usernameRef.current } as SignalPayload,
-        });
+        channelRef.current.send({ type: 'broadcast', event: 'signal', payload: { type: 'call-ended', from: usernameRef.current } as SignalPayload });
       }
       cleanup();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {
     status, callerName, duration, isMuted, error, audioBlocked, iceState,
     startCall, acceptCall, declineCall, endCall, toggleMute,
-    unlockAudio: ensureAudioPlaying,
+    unlockAudio,
   };
 }
