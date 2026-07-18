@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../types/supabase';
 import { parseVoice } from '../utils/voice';
+import { parseImage } from '../utils/image';
 
 type Room = Database['public']['Tables']['rooms']['Row'];
 type Message = Database['public']['Tables']['messages']['Row'];
@@ -118,7 +119,11 @@ export function useChat(username: string) {
               r.id === roomId
                 ? {
                     ...r,
-                    lastMessage: parseVoice(newMsg.content) ? '[语音]' : newMsg.content,
+                    lastMessage: parseImage(newMsg.content)
+                      ? '[图片]'
+                      : parseVoice(newMsg.content)
+                      ? '[语音]'
+                      : newMsg.content,
                     lastTime: newMsg.created_at,
                   }
                 : r
@@ -155,6 +160,21 @@ export function useChat(username: string) {
       if (!activeRoomId) return;
       const roomId = activeRoomId;
       const payload = JSON.stringify({ _voice: true, dur: duration, mime, audio: audioBase64 });
+      await supabase.from('messages').insert({
+        room_id: roomId,
+        username,
+        content: payload,
+      } as any);
+    },
+    [activeRoomId, username]
+  );
+
+  // Send image message (compressed image as base64 inside content JSON)
+  const sendImage = useCallback(
+    async (dataBase64: string, mime: string, w: number, h: number) => {
+      if (!activeRoomId) return;
+      const roomId = activeRoomId;
+      const payload = JSON.stringify({ _image: true, mime, w, h, data: dataBase64 });
       await supabase.from('messages').insert({
         room_id: roomId,
         username,
@@ -216,6 +236,7 @@ export function useChat(username: string) {
     loadMore,
     sendMessage,
     sendVoice,
+    sendImage,
     createRoom,
     setActiveRoomId,
   };

@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { formatTime } from '../utils/time';
 import { parseVoice, formatDuration, VoicePayload } from '../utils/voice';
+import { parseImage, ImagePayload } from '../utils/image';
 import type { Database } from '../types/supabase';
 
 type Message = Database['public']['Tables']['messages']['Row'];
@@ -16,6 +17,11 @@ export default function MessageBubble({ message, isOwn, showAvatar }: MessageBub
   const voice = parseVoice(message.content);
   if (voice) {
     return <VoiceBubble message={message} isOwn={isOwn} showAvatar={showAvatar} voice={voice} />;
+  }
+
+  const image = parseImage(message.content);
+  if (image) {
+    return <ImageBubble message={message} isOwn={isOwn} showAvatar={showAvatar} image={image} />;
   }
 
   return (
@@ -138,6 +144,42 @@ function VoiceBubble({
         />
         <div className="message-time">{formatTime(message.created_at)}</div>
       </div>
+    </div>
+  );
+}
+
+function ImageBubble({
+  message,
+  isOwn,
+  showAvatar,
+  image,
+}: {
+  message: Message;
+  isOwn: boolean;
+  showAvatar: boolean;
+  image: ImagePayload;
+}) {
+  const [zoom, setZoom] = useState(false);
+  const src = `data:${image.mime};base64,${image.data}`;
+
+  return (
+    <div className={`message-wrapper ${isOwn ? 'own' : ''}`}>
+      {showAvatar && !isOwn && (
+        <div className="message-avatar">{message.username.charAt(0).toUpperCase()}</div>
+      )}
+      {!showAvatar && !isOwn && <div className="message-avatar-spacer" />}
+      <div className={`message-bubble image-bubble ${isOwn ? 'own' : ''}`}>
+        {showAvatar && !isOwn && <div className="message-sender">{message.username}</div>}
+        <button className="message-image" onClick={() => setZoom(true)}>
+          <img src={src} alt="图片" loading="lazy" />
+        </button>
+        <div className="message-time">{formatTime(message.created_at)}</div>
+      </div>
+      {zoom && (
+        <div className="image-lightbox" onClick={() => setZoom(false)}>
+          <img src={src} alt="图片" />
+        </div>
+      )}
     </div>
   );
 }

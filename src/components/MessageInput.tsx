@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, KeyboardEvent } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent, ChangeEvent } from 'react';
 import './MessageInput.css';
 import { formatDuration } from '../utils/voice';
+import { compressImage } from '../utils/image';
 
 interface MessageInputProps {
   onSend: (content: string) => void;
   onSendVoice: (audio: string, duration: number, mime: string) => void;
+  onSendImage: (base64: string, mime: string, w: number, h: number) => void;
   placeholder?: string;
 }
 
@@ -26,13 +28,15 @@ function pickMime(): string {
   return '';
 }
 
-export default function MessageInput({ onSend, onSendVoice, placeholder }: MessageInputProps) {
+export default function MessageInput({ onSend, onSendVoice, onSendImage, placeholder }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [cancelMode, setCancelMode] = useState(false);
   const [error, setError] = useState('');
+  const [imgSending, setImgSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<{ mr: MediaRecorder; stream: MediaStream; start: number } | null>(null);
   const timerRef = useRef<number | null>(null);
   const cancelRef = useRef(false);
@@ -63,6 +67,27 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  // 拍照 / 从相册选择图片 -> 压缩 -> 发送
+  const onPickImage = () => {
+    if (fileRef.current) fileRef.current.click();
+  };
+
+  const onFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许重复选择同一张图片
+    if (!file) return;
+    setImgSending(true);
+    try {
+      const img = await compressImage(file);
+      onSendImage(img.base64, img.mime, img.w, img.h);
+    } catch {
+      setError('图片处理失败');
+      setTimeout(() => setError(''), 2000);
+    } finally {
+      setImgSending(false);
     }
   };
 
@@ -167,6 +192,28 @@ export default function MessageInput({ onSend, onSendVoice, placeholder }: Messa
   return (
     <div className="message-input-container">
       {error && <div className="rec-error">{error}</div>}
+      <button
+        className={`img-btn ${imgSending ? 'sending' : ''}`}
+        title="拍照 / 上传图片"
+        onClick={onPickImage}
+        disabled={recording || imgSending}
+      >
+        {imgSending ? (
+          <span className="img-spinner" />
+        ) : (
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinejoin="round"
+            />
+            <circle cx="12" cy="12.5" r="3.2" stroke="currentColor" strokeWidth="2" />
+          </svg>
+        )}
+      </button>
+      <input ref={fileRef} type="file" accept="image/*" hidden onChange={onFileChange} />
+
       <button
         className={`mic-btn ${recording ? 'recording' : ''} ${cancelMode ? 'cancel' : ''}`}
         title={recording ? (cancelMode ? '松开取消' : '上滑取消 · 松开发送') : '按住说话'}

@@ -42,6 +42,7 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
     loadMore,
     sendMessage,
     sendVoice,
+    sendImage,
     createRoom,
     setActiveRoomId,
   } = useChat(username);
@@ -116,6 +117,7 @@ function ChatApp({ username, onLogout }: { username: string; onLogout: () => voi
             <MessageInput
               onSend={sendMessage}
               onSendVoice={sendVoice}
+              onSendImage={sendImage}
               placeholder={`在 #${activeRoom.name} 发消息...`}
             />
           </>
